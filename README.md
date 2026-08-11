@@ -103,18 +103,26 @@ uv build
 
 ## Publishing
 
-GitHub Actions runs checks on pushes and pull requests. Pushing a version tag builds
-the wheel and source distribution and publishes them to PyPI using trusted publishing.
-Tags must use a `v` prefix and exactly match the version in `pyproject.toml`:
+The [`retain-memory` PyPI project](https://pypi.org/project/retain-memory/) and its
+trusted publisher are already configured. No PyPI API token is stored in GitHub.
+
+To prepare a release, update the package version and push the release commit:
 
 ```console
 uv version 0.2.0
 git add pyproject.toml uv.lock
 git commit -m "Release 0.2.0"
-git tag v0.2.0
-git push origin main v0.2.0
+git push origin main
 ```
 
-Before the first release, create the `retain-memory` project (or a pending publisher)
-on PyPI and configure a trusted publisher with this repository, workflow
-`publish.yml`, and environment `pypi`. No PyPI API token is stored in GitHub.
+After CI passes, create and push an annotated tag matching the version in
+`pyproject.toml`:
+
+```console
+git tag -a v0.2.0 -m "Release 0.2.0"
+git push origin v0.2.0
+```
+
+The tag triggers `publish.yml`, which builds and publishes the wheel and source
+distribution through PyPI trusted publishing. Tags must use the `v` prefix and match
+the package version exactly.
