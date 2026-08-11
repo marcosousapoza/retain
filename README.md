@@ -103,9 +103,17 @@ uv build
 
 ## Publishing
 
-GitHub Actions runs checks on pushes and pull requests. Publishing a GitHub release
-builds the wheel and source distribution and publishes them to PyPI using trusted
-publishing.
+GitHub Actions runs checks on pushes and pull requests. Pushing a version tag builds
+the wheel and source distribution and publishes them to PyPI using trusted publishing.
+Tags must use a `v` prefix and exactly match the version in `pyproject.toml`:
+
+```console
+uv version 0.2.0
+git add pyproject.toml uv.lock
+git commit -m "Release 0.2.0"
+git tag v0.2.0
+git push origin main v0.2.0
+```
 
 Before the first release, create the `retain-memory` project (or a pending publisher)
 on PyPI and configure a trusted publisher with this repository, workflow
