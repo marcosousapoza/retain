@@ -4,6 +4,8 @@ import json
 import os
 import sqlite3
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -106,8 +108,17 @@ class Store:
         connection.execute("PRAGMA busy_timeout = 10000")
         return connection
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version > SCHEMA_VERSION:
                 raise RetainError(
@@ -279,7 +290,7 @@ class Store:
             created_at=_timestamp(),
         )
         try:
-            with self._connect() as connection:
+            with self._connection() as connection:
                 connection.execute(
                     """
                     INSERT INTO categories (name, description, created_at)
@@ -292,33 +303,29 @@ class Store:
         return category
 
     def list_categories(self) -> list[Category]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT name, description, created_at
-                FROM categories ORDER BY name COLLATE NOCASE
-                """
-            ).fetchall()
-        return [Category(**dict(row)) for row in rows]
+        with self._connection() as connection:
+            return self._list_categories(connection)
 
     def get_category(self, name: str) -> Category:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT name, description, created_at FROM categories WHERE name = ?",
-                (name,),
-            ).fetchone()
-        if row is None:
-            raise NotFoundError(f"category not found: {name}")
-        return Category(**dict(row))
+        with self._connection() as connection:
+            return self._get_category(connection, name)
 
     def list_leaf_categories(self) -> list[Category]:
-        categories = self.list_categories()
-        names = {category.name for category in categories}
-        return [
-            category
-            for category in categories
-            if not any(name.startswith(f"{category.name}{CATEGORY_DELIMITER}") for name in names)
-        ]
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT category.name, category.description, category.created_at
+                FROM categories AS category
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM categories AS child
+                    WHERE substr(child.name, 1, length(category.name) + length(?))
+                        = category.name || ?
+                )
+                ORDER BY category.name COLLATE NOCASE
+                """,
+                (CATEGORY_DELIMITER, CATEGORY_DELIMITER),
+            ).fetchall()
+        return [Category(**dict(row)) for row in rows]
 
     def rename_category(self, name: str, new_name: str) -> Category:
         return self.update_category(name, new_name=new_name)
@@ -332,36 +339,38 @@ class Store:
     ) -> Category:
         if new_name is None and description is None:
             raise RetainError("provide a category name, description, or both")
-        existing = self.get_category(name)
-        new_name = self._validate_category_name(new_name) if new_name is not None else name
-        new_description = (
-            self._normalize_description(description)
-            if description is not None
-            else existing.description
-        )
-        if new_name == name:
-            with self._connect() as connection:
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = self._get_category(connection, name)
+            validated_name = (
+                self._validate_category_name(new_name) if new_name is not None else name
+            )
+            new_description = (
+                self._normalize_description(description)
+                if description is not None
+                else existing.description
+            )
+            if validated_name == name:
                 connection.execute(
                     "UPDATE categories SET description = ? WHERE name = ?",
                     (new_description, name),
                 )
-            return Category(name, new_description, existing.created_at)
+                return Category(name, new_description, existing.created_at)
 
-        categories = self.list_categories()
-        existing_names = {category.name for category in categories}
+            categories = self._list_categories(connection)
+            category_by_name = {category.name: category for category in categories}
+            prefix = self._category_prefix(name)
+            renames = {
+                category_name: validated_name + category_name[len(name) :]
+                for category_name in category_by_name
+                if category_name == name or category_name.startswith(prefix)
+            }
+            conflict = next(
+                (target for target in renames.values() if target in category_by_name), None
+            )
+            if conflict is not None:
+                raise ConflictError(f"category already exists: {conflict}")
 
-        prefix = f"{name}{CATEGORY_DELIMITER}"
-        renames = {
-            category_name: new_name + category_name[len(name) :]
-            for category_name in existing_names
-            if category_name == name or category_name.startswith(prefix)
-        }
-        conflict = next((target for target in renames.values() if target in existing_names), None)
-        if conflict is not None:
-            raise ConflictError(f"category already exists: {conflict}")
-
-        category_by_name = {category.name: category for category in categories}
-        with self._connect() as connection:
             connection.executemany(
                 """
                 INSERT INTO categories (name, description, created_at)
@@ -384,90 +393,83 @@ class Store:
                 "DELETE FROM categories WHERE name = ?", [(old,) for old in renames]
             )
 
-        return Category(new_name, new_description, existing.created_at)
+        return Category(validated_name, new_description, existing.created_at)
 
     def archive_category(self, name: str) -> ArchiveEntry:
-        prefix = f"{name}{CATEGORY_DELIMITER}"
-        archived_at = _timestamp()
-        archive_id = str(uuid.uuid4())
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            category_rows = connection.execute(
-                """
-                SELECT name, description, created_at FROM categories
-                WHERE name = ? OR substr(name, 1, length(?)) = ?
-                ORDER BY length(name), name
-                """,
-                (name, prefix, prefix),
-            ).fetchall()
-            if not category_rows:
-                raise NotFoundError(f"category not found: {name}")
-            category_names = [row["name"] for row in category_rows]
-            placeholders = ", ".join("?" for _ in category_names)
-            memory_rows = connection.execute(
-                f"""
-                SELECT id, category, content, priority, created_at, updated_at
-                FROM memories WHERE category IN ({placeholders})
-                """,
-                category_names,
-            ).fetchall()
-            entry = ArchiveEntry(
-                archive_id,
-                name,
-                len(category_rows),
-                len(memory_rows),
-                archived_at,
-            )
-            payload = json.dumps(
-                {
-                    "categories": [dict(row) for row in category_rows],
-                    "memories": [dict(row) for row in memory_rows],
-                },
-                ensure_ascii=False,
-            )
-            connection.execute(
-                """
-                INSERT INTO archives (
-                    id, root_name, category_count, memory_count, payload, archived_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    entry.id,
-                    entry.root_name,
-                    entry.category_count,
-                    entry.memory_count,
-                    payload,
-                    entry.archived_at,
-                ),
-            )
-            connection.executemany(
-                "DELETE FROM categories WHERE name = ?", [(value,) for value in category_names]
-            )
-        return entry
+            return self._archive_category(connection, name)
 
     def delete_category(self, name: str, *, force: bool = False) -> None:
-        if not force and self.category_memory_count(name):
-            raise ConflictError("category contains memories; use --force to archive it")
-        self.archive_category(name)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if not force and self._category_memory_count(connection, name):
+                raise ConflictError("category contains memories; use --force to archive it")
+            self._archive_category(connection, name)
 
     def category_memory_count(self, name: str) -> int:
-        prefix = f"{name}{CATEGORY_DELIMITER}"
-        with self._connect() as connection:
-            exists = connection.execute(
-                "SELECT 1 FROM categories WHERE name = ?", (name,)
-            ).fetchone()
-            if exists is None:
-                raise NotFoundError(f"category not found: {name}")
-            return connection.execute(
-                """
-                SELECT COUNT(*) FROM memories
-                WHERE category = ? OR substr(category, 1, length(?)) = ?
-                """,
-                (name, prefix, prefix),
-            ).fetchone()[0]
+        with self._connection() as connection:
+            return self._category_memory_count(connection, name)
+
+    @classmethod
+    def _archive_category(cls, connection: sqlite3.Connection, name: str) -> ArchiveEntry:
+        prefix = cls._category_prefix(name)
+        category_rows = connection.execute(
+            """
+            SELECT name, description, created_at FROM categories
+            WHERE name = ? OR substr(name, 1, length(?)) = ?
+            ORDER BY length(name), name
+            """,
+            (name, prefix, prefix),
+        ).fetchall()
+        if not category_rows:
+            raise NotFoundError(f"category not found: {name}")
+
+        category_names = [row["name"] for row in category_rows]
+        placeholders = ", ".join("?" for _ in category_names)
+        memory_rows = connection.execute(
+            f"""
+            SELECT id, category, content, priority, created_at, updated_at
+            FROM memories WHERE category IN ({placeholders})
+            """,
+            category_names,
+        ).fetchall()
+        entry = ArchiveEntry(
+            id=str(uuid.uuid4()),
+            root_name=name,
+            category_count=len(category_rows),
+            memory_count=len(memory_rows),
+            archived_at=_timestamp(),
+        )
+        payload = json.dumps(
+            {
+                "categories": [dict(row) for row in category_rows],
+                "memories": [dict(row) for row in memory_rows],
+            },
+            ensure_ascii=False,
+        )
+        connection.execute(
+            """
+            INSERT INTO archives (
+                id, root_name, category_count, memory_count, payload, archived_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.id,
+                entry.root_name,
+                entry.category_count,
+                entry.memory_count,
+                payload,
+                entry.archived_at,
+            ),
+        )
+        connection.executemany(
+            "DELETE FROM categories WHERE name = ?", [(value,) for value in category_names]
+        )
+        return entry
 
     def list_archives(self) -> list[ArchiveEntry]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 """
                 SELECT id, root_name, category_count, memory_count, archived_at
@@ -477,7 +479,7 @@ class Store:
         return [ArchiveEntry(**dict(row)) for row in rows]
 
     def restore_archive(self, archive_id: str) -> ArchiveEntry:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT * FROM archives WHERE id = ?", (archive_id,)
@@ -525,7 +527,7 @@ class Store:
         )
 
     def permanently_delete_archive(self, archive_id: str) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             cursor = connection.execute("DELETE FROM archives WHERE id = ?", (archive_id,))
             if cursor.rowcount == 0:
                 raise NotFoundError(f"archive not found: {archive_id}")
@@ -545,34 +547,24 @@ class Store:
         )
 
     def add_memory(self, category: str, content: str, priority: int = 3) -> Memory:
-        settings = self.get_settings()
-        content = self._validate_memory_content(content, settings.max_words_per_memory)
         priority = self._validate_priority(priority)
         timestamp = _timestamp()
-        memory = Memory(
-            id=str(uuid.uuid4()),
-            category=category,
-            content=content,
-            priority=priority,
-            created_at=timestamp,
-            updated_at=timestamp,
-        )
         try:
-            with self._connect() as connection:
+            with self._connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                category_row = connection.execute(
-                    "SELECT 1 FROM categories WHERE name = ?", (category,)
-                ).fetchone()
-                if category_row is None:
-                    raise NotFoundError(f"category not found: {category}")
-                memory_count = connection.execute(
-                    "SELECT COUNT(*) FROM memories WHERE category = ?", (category,)
-                ).fetchone()[0]
-                if memory_count >= settings.max_memories_per_category:
-                    raise ConflictError(
-                        f"category contains the maximum of "
-                        f"{settings.max_memories_per_category} memories"
-                    )
+                settings = self._get_settings(connection)
+                content = self._validate_memory_content(content, settings.max_words_per_memory)
+                self._require_category_capacity(
+                    connection, category, settings.max_memories_per_category
+                )
+                memory = Memory(
+                    id=str(uuid.uuid4()),
+                    category=category,
+                    content=content,
+                    priority=priority,
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
                 connection.execute(
                     """
                     INSERT INTO memories (id, category, content, priority, created_at, updated_at)
@@ -592,14 +584,13 @@ class Store:
         return memory
 
     def list_memories(self, category: str, *, leaf_only: bool = False) -> list[Memory]:
-        if not self._category_exists(category):
-            raise NotFoundError(f"category not found: {category}")
-        if leaf_only and not self._category_is_leaf(category):
-            raise RetainError(
-                f"category has subcategories and cannot be fetched: {category}; "
-                "fetch a leaf category instead"
-            )
-        with self._connect() as connection:
+        with self._connection() as connection:
+            self._get_category(connection, category)
+            if leaf_only and not self._category_is_leaf(connection, category):
+                raise RetainError(
+                    f"category has subcategories and cannot be fetched: {category}; "
+                    "fetch a leaf category instead"
+                )
             rows = connection.execute(
                 """
                 SELECT id, category, content, priority, created_at, updated_at
@@ -612,17 +603,8 @@ class Store:
         return [Memory(**dict(row)) for row in rows]
 
     def get_memory(self, memory_id: str) -> Memory:
-        with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT id, category, content, priority, created_at, updated_at
-                FROM memories WHERE id = ?
-                """,
-                (memory_id,),
-            ).fetchone()
-        if row is None:
-            raise NotFoundError(f"memory not found: {memory_id}")
-        return Memory(**dict(row))
+        with self._connection() as connection:
+            return self._get_memory(connection, memory_id)
 
     def update_memory(
         self,
@@ -634,36 +616,24 @@ class Store:
     ) -> Memory:
         if content is None and priority is None and category is None:
             raise RetainError("provide content, priority, category, or a combination")
-        existing = self.get_memory(memory_id)
-        settings = self.get_settings()
-        new_content = (
-            self._validate_memory_content(content, settings.max_words_per_memory)
-            if content is not None
-            else existing.content
-        )
-        new_priority = (
-            self._validate_priority(priority) if priority is not None else existing.priority
-        )
-        new_category = category if category is not None else existing.category
-        updated_at = _timestamp()
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            if (
-                connection.execute(
-                    "SELECT 1 FROM categories WHERE name = ?", (new_category,)
-                ).fetchone()
-                is None
-            ):
-                raise NotFoundError(f"category not found: {new_category}")
+            existing = self._get_memory(connection, memory_id)
+            settings = self._get_settings(connection)
+            new_content = (
+                self._validate_memory_content(content, settings.max_words_per_memory)
+                if content is not None
+                else existing.content
+            )
+            new_priority = (
+                self._validate_priority(priority) if priority is not None else existing.priority
+            )
+            new_category = category if category is not None else existing.category
             if new_category != existing.category:
-                memory_count = connection.execute(
-                    "SELECT COUNT(*) FROM memories WHERE category = ?", (new_category,)
-                ).fetchone()[0]
-                if memory_count >= settings.max_memories_per_category:
-                    raise ConflictError(
-                        f"category contains the maximum of "
-                        f"{settings.max_memories_per_category} memories"
-                    )
+                self._require_category_capacity(
+                    connection, new_category, settings.max_memories_per_category
+                )
+            updated_at = _timestamp()
             connection.execute(
                 """
                 UPDATE memories
@@ -682,21 +652,14 @@ class Store:
         )
 
     def delete_memory(self, memory_id: str) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             cursor = connection.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
             if cursor.rowcount == 0:
                 raise NotFoundError(f"memory not found: {memory_id}")
 
     def get_settings(self) -> Settings:
-        with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT default_priority, web_host, web_port,
-                       max_memories_per_category, max_words_per_memory
-                FROM settings WHERE id = 1
-                """
-            ).fetchone()
-        return Settings(**dict(row))
+        with self._connection() as connection:
+            return self._get_settings(connection)
 
     def update_settings(
         self,
@@ -717,7 +680,7 @@ class Store:
         max_words_per_memory = self._validate_positive_integer(
             max_words_per_memory, "maximum words per memory"
         )
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 UPDATE settings
@@ -741,20 +704,83 @@ class Store:
             max_words_per_memory,
         )
 
-    def _category_is_leaf(self, name: str) -> bool:
-        prefix = f"{name}{CATEGORY_DELIMITER}"
-        with self._connect() as connection:
-            return (
-                connection.execute(
-                    "SELECT 1 FROM categories WHERE substr(name, 1, length(?)) = ? LIMIT 1",
-                    (prefix, prefix),
-                ).fetchone()
-                is None
-            )
+    @staticmethod
+    def _list_categories(connection: sqlite3.Connection) -> list[Category]:
+        rows = connection.execute(
+            """
+            SELECT name, description, created_at
+            FROM categories ORDER BY name COLLATE NOCASE
+            """
+        ).fetchall()
+        return [Category(**dict(row)) for row in rows]
 
-    def _category_exists(self, name: str) -> bool:
-        with self._connect() as connection:
-            return (
-                connection.execute("SELECT 1 FROM categories WHERE name = ?", (name,)).fetchone()
-                is not None
-            )
+    @staticmethod
+    def _get_category(connection: sqlite3.Connection, name: str) -> Category:
+        row = connection.execute(
+            "SELECT name, description, created_at FROM categories WHERE name = ?", (name,)
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"category not found: {name}")
+        return Category(**dict(row))
+
+    @staticmethod
+    def _get_memory(connection: sqlite3.Connection, memory_id: str) -> Memory:
+        row = connection.execute(
+            """
+            SELECT id, category, content, priority, created_at, updated_at
+            FROM memories WHERE id = ?
+            """,
+            (memory_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"memory not found: {memory_id}")
+        return Memory(**dict(row))
+
+    @staticmethod
+    def _get_settings(connection: sqlite3.Connection) -> Settings:
+        row = connection.execute(
+            """
+            SELECT default_priority, web_host, web_port,
+                   max_memories_per_category, max_words_per_memory
+            FROM settings WHERE id = 1
+            """
+        ).fetchone()
+        return Settings(**dict(row))
+
+    @staticmethod
+    def _category_prefix(name: str) -> str:
+        return f"{name}{CATEGORY_DELIMITER}"
+
+    @classmethod
+    def _category_is_leaf(cls, connection: sqlite3.Connection, name: str) -> bool:
+        prefix = cls._category_prefix(name)
+        return (
+            connection.execute(
+                "SELECT 1 FROM categories WHERE substr(name, 1, length(?)) = ? LIMIT 1",
+                (prefix, prefix),
+            ).fetchone()
+            is None
+        )
+
+    @classmethod
+    def _category_memory_count(cls, connection: sqlite3.Connection, name: str) -> int:
+        cls._get_category(connection, name)
+        prefix = cls._category_prefix(name)
+        return connection.execute(
+            """
+            SELECT COUNT(*) FROM memories
+            WHERE category = ? OR substr(category, 1, length(?)) = ?
+            """,
+            (name, prefix, prefix),
+        ).fetchone()[0]
+
+    @classmethod
+    def _require_category_capacity(
+        cls, connection: sqlite3.Connection, category: str, limit: int
+    ) -> None:
+        cls._get_category(connection, category)
+        memory_count = connection.execute(
+            "SELECT COUNT(*) FROM memories WHERE category = ?", (category,)
+        ).fetchone()[0]
+        if memory_count >= limit:
+            raise ConflictError(f"category contains the maximum of {limit} memories")

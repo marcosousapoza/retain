@@ -1,36 +1,11 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from typing import Any
 
 from flask import Flask, abort, redirect, render_template, request, url_for
 
-from .store import CATEGORY_DELIMITER, NotFoundError, RetainError, Store
-
-
-def build_category_tree(
-    names: list[str], descriptions: dict[str, str] | None = None
-) -> list[dict[str, Any]]:
-    roots: list[dict[str, Any]] = []
-    children: dict[tuple[str, ...], list[dict[str, Any]]] = {(): roots}
-    real_names = set(names)
-    paths = {
-        tuple(name.split(CATEGORY_DELIMITER)[:depth])
-        for name in names
-        for depth in range(1, len(name.split(CATEGORY_DELIMITER)) + 1)
-    }
-    for path in sorted(paths, key=lambda item: tuple(part.casefold() for part in item)):
-        full_name = CATEGORY_DELIMITER.join(path)
-        node = {
-            "label": path[-1],
-            "name": full_name,
-            "exists": full_name in real_names,
-            "description": (descriptions or {}).get(full_name, ""),
-            "children": [],
-        }
-        children.setdefault(path[:-1], roots).append(node)
-        children[path] = node["children"]
-    return roots
+from .category_navigation import build_category_crumbs, build_category_tree
+from .store import CATEGORY_DELIMITER, Category, Memory, NotFoundError, RetainError, Store
 
 
 def create_app(store: Store | None = None) -> Flask:
@@ -40,22 +15,35 @@ def create_app(store: Store | None = None) -> Flask:
     def get_store() -> Store:
         return app.config["STORE"]
 
-    def page_context(**values: Any) -> dict[str, Any]:
-        categories = get_store().list_categories()
-        selected = values.get("selected")
+    def navigation_context(
+        categories: list[Category], selected: str | None = None
+    ) -> dict[str, object]:
         return {
             "categories": categories,
-            "category_tree": build_category_tree(
-                [category.name for category in categories],
-                {category.name: category.description for category in categories},
-            ),
+            "category_tree": build_category_tree(categories, selected),
             "delimiter": CATEGORY_DELIMITER,
             "selected_description": next(
                 (category.description for category in categories if category.name == selected),
                 "",
             ),
-            **values,
+            "category_crumbs": build_category_crumbs(selected, categories) if selected else [],
         }
+
+    def render_index(
+        *,
+        categories: list[Category],
+        selected: str | None,
+        memories: list[Memory],
+        error: str | None = None,
+    ) -> str:
+        return render_template(
+            "index.html",
+            **navigation_context(categories, selected),
+            selected=selected,
+            memories=memories,
+            default_priority=get_store().get_settings().default_priority,
+            error=error,
+        )
 
     @app.get("/")
     def index():
@@ -69,7 +57,7 @@ def create_app(store: Store | None = None) -> Flask:
                 memories = get_store().list_memories(selected)
             except NotFoundError:
                 abort(404)
-        return render_template("index.html", **page_context(selected=selected, memories=memories))
+        return render_index(categories=categories, selected=selected, memories=memories)
 
     @app.post("/memories")
     def create_memory():
@@ -84,10 +72,13 @@ def create_app(store: Store | None = None) -> Flask:
             memories = []
             with suppress(RetainError):
                 memories = get_store().list_memories(category)
+            categories = get_store().list_categories()
             return (
-                render_template(
-                    "index.html",
-                    **page_context(selected=category, memories=memories, error=str(error)),
+                render_index(
+                    categories=categories,
+                    selected=category,
+                    memories=memories,
+                    error=str(error),
                 ),
                 400,
             )
@@ -110,11 +101,20 @@ def create_app(store: Store | None = None) -> Flask:
         except (RetainError, ValueError) as error:
             return (
                 render_template(
-                    "memory_edit.html", **page_context(memory=memory, error=str(error))
+                    "memory_edit.html",
+                    memory=memory,
+                    categories=get_store().list_categories(),
+                    delimiter=CATEGORY_DELIMITER,
+                    error=str(error),
                 ),
                 400,
             )
-        return render_template("memory_edit.html", **page_context(memory=memory))
+        return render_template(
+            "memory_edit.html",
+            memory=memory,
+            categories=get_store().list_categories(),
+            delimiter=CATEGORY_DELIMITER,
+        )
 
     @app.post("/memories/<memory_id>/delete")
     def delete_memory(memory_id: str):
@@ -132,12 +132,21 @@ def create_app(store: Store | None = None) -> Flask:
                 request.form.get("name", ""), request.form.get("description", "")
             )
         except RetainError as error:
-            return render_template("categories.html", **page_context(error=str(error))), 400
+            categories = get_store().list_categories()
+            return (
+                render_template(
+                    "categories.html",
+                    **navigation_context(categories),
+                    error=str(error),
+                ),
+                400,
+            )
         return redirect(url_for("index", category=category.name))
 
     @app.get("/categories")
     def categories():
-        return render_template("categories.html", **page_context())
+        all_categories = get_store().list_categories()
+        return render_template("categories.html", **navigation_context(all_categories))
 
     @app.route("/categories/<path:name>/edit", methods=["GET", "POST"])
     def edit_category(name: str):
@@ -156,12 +165,13 @@ def create_app(store: Store | None = None) -> Flask:
                 return (
                     render_template(
                         "category_edit.html",
-                        **page_context(category=category, error=str(error)),
+                        category=category,
+                        error=str(error),
                     ),
                     400,
                 )
             return redirect(url_for("index", category=category.name))
-        return render_template("category_edit.html", **page_context(category=category))
+        return render_template("category_edit.html", category=category)
 
     @app.post("/categories/<path:name>/delete")
     def delete_category(name: str):
@@ -170,12 +180,24 @@ def create_app(store: Store | None = None) -> Flask:
         except NotFoundError:
             abort(404)
         except RetainError as error:
-            return render_template("categories.html", **page_context(error=str(error))), 409
+            all_categories = get_store().list_categories()
+            return (
+                render_template(
+                    "categories.html",
+                    **navigation_context(all_categories),
+                    error=str(error),
+                ),
+                409,
+            )
         return redirect(url_for("categories"))
 
     @app.get("/archive")
     def archive():
-        return render_template("archive.html", **page_context(archives=get_store().list_archives()))
+        return render_template(
+            "archive.html",
+            archives=get_store().list_archives(),
+            delimiter=CATEGORY_DELIMITER,
+        )
 
     @app.post("/archive/<archive_id>/restore")
     def restore_archive(archive_id: str):
@@ -187,7 +209,9 @@ def create_app(store: Store | None = None) -> Flask:
             return (
                 render_template(
                     "archive.html",
-                    **page_context(archives=get_store().list_archives(), error=str(error)),
+                    archives=get_store().list_archives(),
+                    delimiter=CATEGORY_DELIMITER,
+                    error=str(error),
                 ),
                 409,
             )
@@ -217,19 +241,14 @@ def create_app(store: Store | None = None) -> Flask:
                 )
             except (RetainError, ValueError) as error:
                 return (
-                    render_template(
-                        "settings.html", **page_context(settings=current, error=str(error))
-                    ),
+                    render_template("settings.html", settings=current, error=str(error)),
                     400,
                 )
             return redirect(url_for("settings", saved="yes"))
         return render_template(
             "settings.html",
-            **page_context(settings=current, saved=request.args.get("saved") == "yes"),
+            settings=current,
+            saved=request.args.get("saved") == "yes",
         )
-
-    @app.context_processor
-    def template_helpers():
-        return {"default_priority": get_store().get_settings().default_priority}
 
     return app

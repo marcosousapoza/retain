@@ -17,11 +17,7 @@
   <section class="panel category-manager">
     <h2>Category tree</h2>
     {% if category_tree %}
-    <ul class="manage-list">
-      {% for category in categories %}
-      <li><span><strong>{{ category.name.replace(delimiter, ' / ') }}</strong>{% if category.description %}<small>{{ category.description }}</small>{% endif %}</span><a href="{{ url_for('edit_category', name=category.name) }}">Edit</a></li>
-      {% endfor %}
-    </ul>
+      <div class="management-tree">{{ render_tree(category_tree, manage=true) }}</div>
     {% else %}<p class="muted">No categories created.</p>{% endif %}
   </section>
 </div>

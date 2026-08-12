@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from retain_memory.category_navigation import build_category_tree
 from retain_memory.store import Store
-from retain_memory.web import build_category_tree, create_app
+from retain_memory.web import create_app
 
 
 @pytest.fixture
@@ -18,13 +19,39 @@ def client(store):
     return app.test_client()
 
 
-def test_category_tree_includes_virtual_parents():
-    tree = build_category_tree(["work::retain::release", "personal"])
+def test_category_tree_includes_virtual_parents(store):
+    store.create_category("work::retain::release")
+    store.create_category("personal")
 
-    assert [node["label"] for node in tree] == ["personal", "work"]
-    assert tree[1]["exists"] is False
-    assert tree[1]["children"][0]["name"] == "work::retain"
-    assert tree[1]["children"][0]["children"][0]["exists"] is True
+    tree = build_category_tree(store.list_categories())
+
+    assert [node.label for node in tree] == ["personal", "work"]
+    assert tree[1].exists is False
+    assert tree[1].children[0].name == "work::retain"
+    assert tree[1].children[0].children[0].exists is True
+
+
+def test_category_page_renders_hierarchy(client, store):
+    store.create_category("work::retain", "Development context")
+
+    page = client.get("/categories")
+
+    assert page.status_code == 200
+    assert b'class="management-tree"' in page.data
+    assert page.data.index(b">work</span>") < page.data.index(b">retain</a>")
+    assert b"Development context" in page.data
+
+
+def test_selected_category_renders_breadcrumbs_and_active_tree(client, store):
+    store.create_category("work")
+    store.create_category("work::retain")
+
+    page = client.get("/?category=work::retain")
+
+    assert b'aria-label="Category path"' in page.data
+    assert b'href="/?category=work">work</a>' in page.data
+    assert b"<h1>retain</h1>" in page.data
+    assert b'aria-current="page"' in page.data
 
 
 def test_web_creates_and_renders_nested_category(client, store):

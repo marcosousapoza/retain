@@ -355,3 +355,33 @@ def test_leaf_category_listing_and_reads(store):
     with pytest.raises(RetainError, match="fetch a leaf category"):
         store.list_memories("work", leaf_only=True)
     assert store.list_memories("work") == []
+
+
+def test_compound_operations_use_one_connection(store, monkeypatch):
+    store.create_category("inbox")
+    store.create_category("archive")
+    memory = store.add_memory("inbox", "File this")
+    original_connect = store._connect
+    connection_count = 0
+
+    def counted_connect():
+        nonlocal connection_count
+        connection_count += 1
+        return original_connect()
+
+    monkeypatch.setattr(store, "_connect", counted_connect)
+
+    store.update_memory(memory.id, category="archive")
+    assert connection_count == 1
+
+    connection_count = 0
+    store.list_memories("archive", leaf_only=True)
+    assert connection_count == 1
+
+    connection_count = 0
+    store.rename_category("archive", "filed")
+    assert connection_count == 1
+
+    connection_count = 0
+    store.delete_category("filed", force=True)
+    assert connection_count == 1
