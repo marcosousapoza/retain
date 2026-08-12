@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Edit category · Retain{% endblock %}
+{% block content %}
+<div class="narrow">
+  <div class="page-heading"><div><p class="eyebrow">Category</p><h1>Edit category</h1></div></div>
+  {% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+  <form class="panel form-card" method="post">
+    <label for="name">Category path</label>
+    <input id="name" name="name" value="{{ category_name }}" required>
+    <p class="hint">Renaming a category also moves all categories below it.</p>
+    <button type="submit">Save name</button>
+  </form>
+  <form class="panel form-card danger-zone" method="post" action="{{ url_for('delete_category', name=category_name) }}" onsubmit="return confirm('Delete this category?')">
+    <h2>Delete category</h2>
+    <label class="check"><input type="checkbox" name="force" value="yes"> Also delete every memory directly in this category</label>
+    <button class="danger" type="submit">Delete category</button>
+  </form>
+</div>
+{% endblock %}

@@ -4,8 +4,11 @@
 memories in one local SQLite database. Memories have priorities from 1 (lowest) to 5
 (highest) and UTC creation/update timestamps.
 
-Categories are intentionally managed only through the CLI. MCP clients can list
-categories and create, retrieve, update, or delete memories within them.
+Categories are managed through the CLI or web interface. MCP clients can list categories
+and create, retrieve, update, or delete memories within them.
+
+Category names can form a hierarchy using the Anki-style `::` delimiter, for example
+`projects::retain::release`. Each part must be non-empty and cannot contain a colon.
 
 ## Installation
 
@@ -54,6 +57,22 @@ retain memory delete MEMORY_ID
 
 Commands that return data print JSON. Category memory lists are ordered by priority
 descending and creation time descending.
+
+## Web interface
+
+Start the local Flask interface with:
+
+```console
+retain web
+```
+
+It provides memory and category editing, displays hierarchical categories as trees,
+and includes settings for the default priority and web host/port. Saved host and port
+changes take effect on the next start. They can be overridden for one run:
+
+```console
+retain web --host 0.0.0.0 --port 8080
+```
 
 ## MCP Installation
 

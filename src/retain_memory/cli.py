@@ -17,6 +17,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="retain", description="Retain categorized memories")
     resources = parser.add_subparsers(dest="resource", required=True)
 
+    web = resources.add_parser("web", help="Start the local web interface")
+    web.add_argument("--host", help="Host to bind (overrides the saved setting)")
+    web.add_argument("--port", type=int, help="Port to bind (overrides the saved setting)")
+    web.add_argument("--debug", action="store_true", help="Run Flask in debug mode")
+
     category = resources.add_parser("category", help="Manage categories")
     category_commands = category.add_subparsers(dest="command", required=True)
     category_commands.add_parser("list", help="List categories")
@@ -48,6 +53,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run(args: argparse.Namespace, store: Store) -> None:
+    if args.resource == "web":
+        from .web import create_app
+
+        settings = store.get_settings()
+        create_app(store).run(
+            host=args.host or settings.web_host,
+            port=args.port or settings.web_port,
+            debug=args.debug,
+        )
+        return
+
     if args.resource == "category":
         if args.command == "list":
             _print_json([category.to_dict() for category in store.list_categories()])

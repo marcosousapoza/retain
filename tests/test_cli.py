@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import Mock, patch
 
 from retain_memory.cli import main
 
@@ -52,3 +53,13 @@ def test_cli_refuses_nonempty_category_deletion(monkeypatch, tmp_path, capsys):
 
     assert exit_code == 1
     assert "--force" in captured.err
+
+
+def test_cli_starts_web_with_saved_settings(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMORY_FILE", str(tmp_path / "memory.db"))
+    app = Mock()
+
+    with patch("retain_memory.web.create_app", return_value=app):
+        assert main(["web"]) == 0
+
+    app.run.assert_called_once_with(host="127.0.0.1", port=5000, debug=False)

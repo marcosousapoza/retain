@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from retain_memory.store import ConflictError, NotFoundError, RetainError, Store
+from retain_memory.store import CATEGORY_DELIMITER, ConflictError, NotFoundError, RetainError, Store
 
 
 @pytest.fixture
@@ -26,6 +26,27 @@ def test_category_lifecycle(store):
     assert store.list_categories() == []
 
 
+def test_nested_category_rename_moves_descendants_and_memories(store):
+    store.create_category("projects")
+    store.create_category(f"projects{CATEGORY_DELIMITER}retain")
+    memory = store.add_memory(f"projects{CATEGORY_DELIMITER}retain", "Ship it")
+
+    renamed = store.rename_category("projects", "work")
+
+    assert renamed.name == "work"
+    assert [category.name for category in store.list_categories()] == [
+        "work",
+        f"work{CATEGORY_DELIMITER}retain",
+    ]
+    assert store.get_memory(memory.id).category == f"work{CATEGORY_DELIMITER}retain"
+
+
+@pytest.mark.parametrize("name", ["parent:", "parent:::child", "parent::::child"])
+def test_category_delimiter_requires_nonempty_segments(store, name):
+    with pytest.raises(RetainError, match="non-empty segments"):
+        store.create_category(name)
+
+
 def test_memory_crud_and_persistence(store):
     store.create_category("work")
     memory = store.add_memory("work", "Ship the release", 4)
@@ -42,6 +63,18 @@ def test_memory_crud_and_persistence(store):
     store.delete_memory(memory.id)
     with pytest.raises(NotFoundError, match="memory not found"):
         store.get_memory(memory.id)
+
+
+def test_memory_can_move_to_another_category(store):
+    store.create_category("inbox")
+    store.create_category("archive")
+    memory = store.add_memory("inbox", "File this")
+
+    updated = store.update_memory(memory.id, category="archive")
+
+    assert updated.category == "archive"
+    assert store.list_memories("inbox") == []
+    assert store.list_memories("archive") == [updated]
 
 
 def test_memories_are_ordered_by_priority_then_newest(store, monkeypatch):
@@ -101,3 +134,11 @@ def test_database_enforces_priority_constraint(store):
             VALUES ('id', 'notes', 'invalid', 9, 'now', 'now')
             """
         )
+
+
+def test_settings_are_persisted(store):
+    assert store.get_settings().default_priority == 3
+
+    updated = store.update_settings(default_priority=4, web_host="0.0.0.0", web_port=8080)
+
+    assert Store(store.path).get_settings() == updated

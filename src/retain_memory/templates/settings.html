@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Settings · Retain{% endblock %}
+{% block content %}
+<div class="narrow">
+  <div class="page-heading"><div><p class="eyebrow">Configuration</p><h1>Settings</h1></div></div>
+  {% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+  {% if saved %}<div class="notice success">Settings saved.</div>{% endif %}
+  <form class="panel form-card" method="post">
+    <label for="default_priority">Default memory priority</label>
+    <select id="default_priority" name="default_priority">{% for priority in range(1, 6) %}<option value="{{ priority }}"{% if priority == settings.default_priority %} selected{% endif %}>{{ priority }}</option>{% endfor %}</select>
+    <label for="web_host">Web host</label>
+    <input id="web_host" name="web_host" value="{{ settings.web_host }}" required>
+    <label for="web_port">Web port</label>
+    <input id="web_port" name="web_port" type="number" min="1" max="65535" value="{{ settings.web_port }}" required>
+    <p class="hint">Host and port changes apply the next time you run <code>retain web</code>. Command-line options override them.</p>
+    <button type="submit">Save settings</button>
+  </form>
+</div>
+{% endblock %}

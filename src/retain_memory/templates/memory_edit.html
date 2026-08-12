@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Edit memory · Retain{% endblock %}
+{% block content %}
+<div class="narrow">
+  <div class="page-heading"><div><p class="eyebrow">Memory</p><h1>Edit memory</h1></div></div>
+  {% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+  <form class="panel form-card" method="post">
+    <label for="content">Content</label>
+    <textarea id="content" name="content" rows="7" required>{{ memory.content }}</textarea>
+    <label for="category">Category</label>
+    <select id="category" name="category">
+      {% for category in categories %}<option value="{{ category.name }}"{% if category.name == memory.category %} selected{% endif %}>{{ category.name.replace(delimiter, ' / ') }}</option>{% endfor %}
+    </select>
+    <label for="priority">Priority</label>
+    <select id="priority" name="priority">{% for priority in range(1, 6) %}<option value="{{ priority }}"{% if priority == memory.priority %} selected{% endif %}>{{ priority }}</option>{% endfor %}</select>
+    <div class="actions"><button type="submit">Save changes</button><a class="button secondary" href="{{ url_for('index', category=memory.category) }}">Cancel</a></div>
+  </form>
+</div>
+{% endblock %}

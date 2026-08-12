@@ -1,0 +1,15 @@
+{% macro render_tree(nodes, selected=None) %}
+  <ul class="category-tree">
+  {% for node in nodes %}
+    <li>
+      {% if node.exists %}
+        <a class="tree-link{% if node.name == selected %} active{% endif %}"
+           href="{{ url_for('index', category=node.name) }}">{{ node.label }}</a>
+      {% else %}
+        <span class="tree-parent">{{ node.label }}</span>
+      {% endif %}
+      {% if node.children %}{{ render_tree(node.children, selected) }}{% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+{% endmacro %}

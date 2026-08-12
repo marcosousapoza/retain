@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 ENV_NAME = "MEMORY_FILE"
+CATEGORY_DELIMITER = "::"
 
 
 class RetainError(Exception):
@@ -40,6 +41,16 @@ class Memory:
     priority: int
     created_at: str
     updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class Settings:
+    default_priority: int
+    web_host: str
+    web_port: int
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -87,7 +98,17 @@ class Store:
                 CREATE INDEX IF NOT EXISTS memories_category_order
                 ON memories(category, priority DESC, created_at DESC);
 
-                PRAGMA user_version = 1;
+                CREATE TABLE IF NOT EXISTS settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    default_priority INTEGER NOT NULL CHECK (default_priority BETWEEN 1 AND 5),
+                    web_host TEXT NOT NULL CHECK (length(trim(web_host)) > 0),
+                    web_port INTEGER NOT NULL CHECK (web_port BETWEEN 1 AND 65535)
+                );
+
+                INSERT OR IGNORE INTO settings (id, default_priority, web_host, web_port)
+                VALUES (1, 3, '127.0.0.1', 5000);
+
+                PRAGMA user_version = 2;
                 """
             )
 
@@ -104,8 +125,19 @@ class Store:
             raise RetainError("priority must be an integer from 1 to 5")
         return priority
 
+    @classmethod
+    def _validate_category_name(cls, name: str) -> str:
+        name = cls._validate_text(name, "category name")
+        segments = [segment.strip() for segment in name.split(CATEGORY_DELIMITER)]
+        if any(not segment or ":" in segment for segment in segments):
+            raise RetainError(
+                f"category names must contain non-empty segments separated by "
+                f"'{CATEGORY_DELIMITER}'"
+            )
+        return CATEGORY_DELIMITER.join(segments)
+
     def create_category(self, name: str) -> Category:
-        name = self._validate_text(name, "category name")
+        name = self._validate_category_name(name)
         category = Category(name=name, created_at=_timestamp())
         try:
             with self._connect() as connection:
@@ -123,6 +155,42 @@ class Store:
                 "SELECT name, created_at FROM categories ORDER BY name COLLATE NOCASE"
             ).fetchall()
         return [Category(**dict(row)) for row in rows]
+
+    def rename_category(self, name: str, new_name: str) -> Category:
+        new_name = self._validate_category_name(new_name)
+        categories = self.list_categories()
+        existing_names = {category.name for category in categories}
+        if name not in existing_names:
+            raise NotFoundError(f"category not found: {name}")
+        created_at = next(category.created_at for category in categories if category.name == name)
+        if name == new_name:
+            return Category(name=name, created_at=created_at)
+
+        prefix = f"{name}{CATEGORY_DELIMITER}"
+        renames = {
+            category_name: new_name + category_name[len(name) :]
+            for category_name in existing_names
+            if category_name == name or category_name.startswith(prefix)
+        }
+        conflict = next((target for target in renames.values() if target in existing_names), None)
+        if conflict is not None:
+            raise ConflictError(f"category already exists: {conflict}")
+
+        created_at_by_name = {category.name: category.created_at for category in categories}
+        with self._connect() as connection:
+            connection.executemany(
+                "INSERT INTO categories (name, created_at) VALUES (?, ?)",
+                [(new, created_at_by_name[old]) for old, new in renames.items()],
+            )
+            connection.executemany(
+                "UPDATE memories SET category = ? WHERE category = ?",
+                [(new, old) for old, new in renames.items()],
+            )
+            connection.executemany(
+                "DELETE FROM categories WHERE name = ?", [(old,) for old in renames]
+            )
+
+        return Category(name=new_name, created_at=created_at)
 
     def delete_category(self, name: str, *, force: bool = False) -> None:
         with self._connect() as connection:
@@ -212,9 +280,10 @@ class Store:
         *,
         content: str | None = None,
         priority: int | None = None,
+        category: str | None = None,
     ) -> Memory:
-        if content is None and priority is None:
-            raise RetainError("provide content, priority, or both")
+        if content is None and priority is None and category is None:
+            raise RetainError("provide content, priority, category, or a combination")
         existing = self.get_memory(memory_id)
         new_content = (
             self._validate_text(content, "memory content")
@@ -224,17 +293,22 @@ class Store:
         new_priority = (
             self._validate_priority(priority) if priority is not None else existing.priority
         )
+        new_category = category if category is not None else existing.category
+        if not self._category_exists(new_category):
+            raise NotFoundError(f"category not found: {new_category}")
         updated_at = _timestamp()
         with self._connect() as connection:
             connection.execute(
                 """
-                UPDATE memories SET content = ?, priority = ?, updated_at = ? WHERE id = ?
+                UPDATE memories
+                SET category = ?, content = ?, priority = ?, updated_at = ?
+                WHERE id = ?
                 """,
-                (new_content, new_priority, updated_at, memory_id),
+                (new_category, new_content, new_priority, updated_at, memory_id),
             )
         return Memory(
             id=existing.id,
-            category=existing.category,
+            category=new_category,
             content=new_content,
             priority=new_priority,
             created_at=existing.created_at,
@@ -246,6 +320,29 @@ class Store:
             cursor = connection.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
             if cursor.rowcount == 0:
                 raise NotFoundError(f"memory not found: {memory_id}")
+
+    def get_settings(self) -> Settings:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT default_priority, web_host, web_port FROM settings WHERE id = 1"
+            ).fetchone()
+        return Settings(**dict(row))
+
+    def update_settings(self, *, default_priority: int, web_host: str, web_port: int) -> Settings:
+        default_priority = self._validate_priority(default_priority)
+        web_host = self._validate_text(web_host, "web host")
+        if isinstance(web_port, bool) or not 1 <= web_port <= 65535:
+            raise RetainError("web port must be an integer from 1 to 65535")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE settings
+                SET default_priority = ?, web_host = ?, web_port = ?
+                WHERE id = 1
+                """,
+                (default_priority, web_host, web_port),
+            )
+        return Settings(default_priority, web_host, web_port)
 
     def _category_exists(self, name: str) -> bool:
         with self._connect() as connection:

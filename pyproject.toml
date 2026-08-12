@@ -21,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
+    "flask>=3.1,<4",
     "mcp>=1.12,<2",
 ]
 
