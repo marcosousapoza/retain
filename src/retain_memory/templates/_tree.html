@@ -4,7 +4,7 @@
     <li>
       {% if node.exists %}
         <a class="tree-link{% if node.name == selected %} active{% endif %}"
-           href="{{ url_for('index', category=node.name) }}">{{ node.label }}</a>
+           href="{{ url_for('index', category=node.name) }}"{% if node.description %} title="{{ node.description }}"{% endif %}>{{ node.label }}</a>
       {% else %}
         <span class="tree-parent">{{ node.label }}</span>
       {% endif %}

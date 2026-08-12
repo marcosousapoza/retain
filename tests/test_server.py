@@ -69,8 +69,9 @@ def test_mcp_lists_and_fetches_only_leaf_categories(monkeypatch, tmp_path):
     monkeypatch.setenv("MEMORY_FILE", str(tmp_path / "memory.db"))
     store = Store()
     store.create_category("work")
-    store.create_category("work::retain")
+    store.create_category("work::retain", "Knowledge about the Retain project")
 
     assert [category["name"] for category in list_categories()] == ["work::retain"]
+    assert list_categories()[0]["description"] == "Knowledge about the Retain project"
     with pytest.raises(RetainError, match="fetch a leaf category"):
         get_memories("work")

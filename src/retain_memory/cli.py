@@ -27,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
     category_commands.add_parser("list", help="List categories")
     category_create = category_commands.add_parser("create", help="Create a category")
     category_create.add_argument("name")
+    category_create.add_argument("--description", default="")
+    category_update = category_commands.add_parser("update", help="Update a category")
+    category_update.add_argument("name")
+    category_update.add_argument("--new-name")
+    category_update.add_argument("--description")
     category_delete = category_commands.add_parser("delete", help="Delete a category")
     category_delete.add_argument("name")
     category_delete.add_argument(
@@ -68,7 +73,13 @@ def run(args: argparse.Namespace, store: Store) -> None:
         if args.command == "list":
             _print_json([category.to_dict() for category in store.list_categories()])
         elif args.command == "create":
-            _print_json(store.create_category(args.name).to_dict())
+            _print_json(store.create_category(args.name, args.description).to_dict())
+        elif args.command == "update":
+            _print_json(
+                store.update_category(
+                    args.name, new_name=args.new_name, description=args.description
+                ).to_dict()
+            )
         elif args.command == "delete":
             store.delete_category(args.name, force=args.force)
         return

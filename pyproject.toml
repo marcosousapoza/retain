@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "retain-memory"
-version = "0.3.0"
+version = "0.4.0"
 description = "A small CLI and MCP server for categorized memory retention"
 readme = "README.md"
 requires-python = ">=3.11"

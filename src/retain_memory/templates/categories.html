@@ -10,6 +10,8 @@
     <label for="name">Category path</label>
     <input id="name" name="name" required placeholder="Projects{{ delimiter }}Retain">
     <p class="hint">Use <code>{{ delimiter }}</code> between levels. The colon delimiter cannot be part of a category label.</p>
+    <label for="description">Description</label>
+    <textarea id="description" name="description" rows="3" placeholder="What belongs in this category?"></textarea>
     <button type="submit">Create category</button>
   </form>
   <section class="panel category-manager">
@@ -17,7 +19,7 @@
     {% if category_tree %}
     <ul class="manage-list">
       {% for category in categories %}
-      <li><span>{{ category.name.replace(delimiter, ' / ') }}</span><a href="{{ url_for('edit_category', name=category.name) }}">Edit</a></li>
+      <li><span><strong>{{ category.name.replace(delimiter, ' / ') }}</strong>{% if category.description %}<small>{{ category.description }}</small>{% endif %}</span><a href="{{ url_for('edit_category', name=category.name) }}">Edit</a></li>
       {% endfor %}
     </ul>
     {% else %}<p class="muted">No categories created.</p>{% endif %}

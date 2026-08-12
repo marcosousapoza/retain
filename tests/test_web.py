@@ -28,7 +28,10 @@ def test_category_tree_includes_virtual_parents():
 
 
 def test_web_creates_and_renders_nested_category(client, store):
-    response = client.post("/categories", data={"name": "work::retain"})
+    response = client.post(
+        "/categories",
+        data={"name": "work::retain", "description": "Retain development context"},
+    )
 
     assert response.status_code == 302
     page = client.get("/?category=work::retain")
@@ -36,6 +39,7 @@ def test_web_creates_and_renders_nested_category(client, store):
     assert b"work" in page.data
     assert b"retain" in page.data
     assert [category.name for category in store.list_categories()] == ["work::retain"]
+    assert store.get_category("work::retain").description == "Retain development context"
 
 
 def test_web_edits_and_moves_memory(client, store):
@@ -64,6 +68,18 @@ def test_web_renames_category_branch(client, store):
         "projects",
         "projects::retain",
     ]
+
+
+def test_web_edits_category_description(client, store):
+    store.create_category("work", "Old description")
+
+    response = client.post(
+        "/categories/work/edit",
+        data={"name": "work", "description": "What belongs at work"},
+    )
+
+    assert response.status_code == 302
+    assert store.get_category("work").description == "What belongs at work"
 
 
 def test_web_updates_settings(client, store):

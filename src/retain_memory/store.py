@@ -10,6 +10,7 @@ from typing import Any
 
 ENV_NAME = "MEMORY_FILE"
 CATEGORY_DELIMITER = "::"
+SCHEMA_VERSION = 4
 
 
 class RetainError(Exception):
@@ -27,6 +28,7 @@ class ConflictError(RetainError):
 @dataclass(frozen=True)
 class Category:
     name: str
+    description: str
     created_at: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -93,14 +95,71 @@ class Store:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS categories (
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version > SCHEMA_VERSION:
+                raise RetainError(
+                    f"database schema version {version} is newer than supported version "
+                    f"{SCHEMA_VERSION}"
+                )
+            if version == 0:
+                has_tables = connection.execute(
+                    """
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if has_tables:
+                    raise RetainError("database has tables but no recognized schema version")
+                self._create_schema(connection)
+                return
+
+            if version == 1:
+                connection.executescript(
+                    """
+                    CREATE TABLE settings (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        default_priority INTEGER NOT NULL
+                            CHECK (default_priority BETWEEN 1 AND 5),
+                        web_host TEXT NOT NULL CHECK (length(trim(web_host)) > 0),
+                        web_port INTEGER NOT NULL CHECK (web_port BETWEEN 1 AND 65535)
+                    );
+                    INSERT INTO settings (id, default_priority, web_host, web_port)
+                    VALUES (1, 3, '127.0.0.1', 5000);
+                    PRAGMA user_version = 2;
+                    """
+                )
+                version = 2
+            if version == 2:
+                connection.executescript(
+                    """
+                    ALTER TABLE settings ADD COLUMN max_memories_per_category INTEGER
+                    NOT NULL DEFAULT 100 CHECK (max_memories_per_category > 0);
+                    ALTER TABLE settings ADD COLUMN max_words_per_memory INTEGER
+                    NOT NULL DEFAULT 500 CHECK (max_words_per_memory > 0);
+                    PRAGMA user_version = 3;
+                    """
+                )
+                version = 3
+            if version == 3:
+                connection.executescript(
+                    """
+                    ALTER TABLE categories ADD COLUMN description TEXT NOT NULL DEFAULT '';
+                    PRAGMA user_version = 4;
+                    """
+                )
+
+    @staticmethod
+    def _create_schema(connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+                CREATE TABLE categories (
                     name TEXT PRIMARY KEY CHECK (length(trim(name)) > 0),
+                    description TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL
                 );
 
-                CREATE TABLE IF NOT EXISTS memories (
+                CREATE TABLE memories (
                     id TEXT PRIMARY KEY,
                     category TEXT NOT NULL REFERENCES categories(name) ON DELETE CASCADE,
                     content TEXT NOT NULL CHECK (length(trim(content)) > 0),
@@ -109,40 +168,28 @@ class Store:
                     updated_at TEXT NOT NULL
                 );
 
-                CREATE INDEX IF NOT EXISTS memories_category_order
+                CREATE INDEX memories_category_order
                 ON memories(category, priority DESC, created_at DESC);
 
-                CREATE TABLE IF NOT EXISTS settings (
+                CREATE TABLE settings (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     default_priority INTEGER NOT NULL CHECK (default_priority BETWEEN 1 AND 5),
                     web_host TEXT NOT NULL CHECK (length(trim(web_host)) > 0),
-                    web_port INTEGER NOT NULL CHECK (web_port BETWEEN 1 AND 65535)
+                    web_port INTEGER NOT NULL CHECK (web_port BETWEEN 1 AND 65535),
+                    max_memories_per_category INTEGER NOT NULL DEFAULT 100
+                        CHECK (max_memories_per_category > 0),
+                    max_words_per_memory INTEGER NOT NULL DEFAULT 500
+                        CHECK (max_words_per_memory > 0)
                 );
 
-                INSERT OR IGNORE INTO settings (id, default_priority, web_host, web_port)
-                VALUES (1, 3, '127.0.0.1', 5000);
+                INSERT INTO settings (
+                    id, default_priority, web_host, web_port,
+                    max_memories_per_category, max_words_per_memory
+                ) VALUES (1, 3, '127.0.0.1', 5000, 100, 500);
 
-                PRAGMA user_version = 2;
+                PRAGMA user_version = 4;
                 """
-            )
-            columns = {
-                row["name"] for row in connection.execute("PRAGMA table_info(settings)").fetchall()
-            }
-            if "max_memories_per_category" not in columns:
-                connection.execute(
-                    """
-                    ALTER TABLE settings ADD COLUMN max_memories_per_category INTEGER
-                    NOT NULL DEFAULT 100 CHECK (max_memories_per_category > 0)
-                    """
-                )
-            if "max_words_per_memory" not in columns:
-                connection.execute(
-                    """
-                    ALTER TABLE settings ADD COLUMN max_words_per_memory INTEGER
-                    NOT NULL DEFAULT 500 CHECK (max_words_per_memory > 0)
-                    """
-                )
-            connection.execute("PRAGMA user_version = 3")
+        )
 
     @staticmethod
     def _validate_text(value: str, label: str) -> str:
@@ -183,14 +230,25 @@ class Store:
             )
         return CATEGORY_DELIMITER.join(segments)
 
-    def create_category(self, name: str) -> Category:
+    @staticmethod
+    def _normalize_description(description: str) -> str:
+        return description.strip()
+
+    def create_category(self, name: str, description: str = "") -> Category:
         name = self._validate_category_name(name)
-        category = Category(name=name, created_at=_timestamp())
+        category = Category(
+            name=name,
+            description=self._normalize_description(description),
+            created_at=_timestamp(),
+        )
         try:
             with self._connect() as connection:
                 connection.execute(
-                    "INSERT INTO categories (name, created_at) VALUES (?, ?)",
-                    (category.name, category.created_at),
+                    """
+                    INSERT INTO categories (name, description, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (category.name, category.description, category.created_at),
                 )
         except sqlite3.IntegrityError as error:
             raise ConflictError(f"category already exists: {name}") from error
@@ -199,9 +257,22 @@ class Store:
     def list_categories(self) -> list[Category]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT name, created_at FROM categories ORDER BY name COLLATE NOCASE"
+                """
+                SELECT name, description, created_at
+                FROM categories ORDER BY name COLLATE NOCASE
+                """
             ).fetchall()
         return [Category(**dict(row)) for row in rows]
+
+    def get_category(self, name: str) -> Category:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT name, description, created_at FROM categories WHERE name = ?",
+                (name,),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"category not found: {name}")
+        return Category(**dict(row))
 
     def list_leaf_categories(self) -> list[Category]:
         categories = self.list_categories()
@@ -213,14 +284,34 @@ class Store:
         ]
 
     def rename_category(self, name: str, new_name: str) -> Category:
-        new_name = self._validate_category_name(new_name)
+        return self.update_category(name, new_name=new_name)
+
+    def update_category(
+        self,
+        name: str,
+        *,
+        new_name: str | None = None,
+        description: str | None = None,
+    ) -> Category:
+        if new_name is None and description is None:
+            raise RetainError("provide a category name, description, or both")
+        existing = self.get_category(name)
+        new_name = self._validate_category_name(new_name) if new_name is not None else name
+        new_description = (
+            self._normalize_description(description)
+            if description is not None
+            else existing.description
+        )
+        if new_name == name:
+            with self._connect() as connection:
+                connection.execute(
+                    "UPDATE categories SET description = ? WHERE name = ?",
+                    (new_description, name),
+                )
+            return Category(name, new_description, existing.created_at)
+
         categories = self.list_categories()
         existing_names = {category.name for category in categories}
-        if name not in existing_names:
-            raise NotFoundError(f"category not found: {name}")
-        created_at = next(category.created_at for category in categories if category.name == name)
-        if name == new_name:
-            return Category(name=name, created_at=created_at)
 
         prefix = f"{name}{CATEGORY_DELIMITER}"
         renames = {
@@ -232,11 +323,21 @@ class Store:
         if conflict is not None:
             raise ConflictError(f"category already exists: {conflict}")
 
-        created_at_by_name = {category.name: category.created_at for category in categories}
+        category_by_name = {category.name: category for category in categories}
         with self._connect() as connection:
             connection.executemany(
-                "INSERT INTO categories (name, created_at) VALUES (?, ?)",
-                [(new, created_at_by_name[old]) for old, new in renames.items()],
+                """
+                INSERT INTO categories (name, description, created_at)
+                VALUES (?, ?, ?)
+                """,
+                [
+                    (
+                        new,
+                        new_description if old == name else category_by_name[old].description,
+                        category_by_name[old].created_at,
+                    )
+                    for old, new in renames.items()
+                ],
             )
             connection.executemany(
                 "UPDATE memories SET category = ? WHERE category = ?",
@@ -246,7 +347,7 @@ class Store:
                 "DELETE FROM categories WHERE name = ?", [(old,) for old in renames]
             )
 
-        return Category(name=new_name, created_at=created_at)
+        return Category(new_name, new_description, existing.created_at)
 
     def delete_category(self, name: str, *, force: bool = False) -> None:
         with self._connect() as connection:

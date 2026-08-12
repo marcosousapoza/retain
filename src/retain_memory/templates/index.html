@@ -12,7 +12,7 @@
     {% if error %}<div class="notice error">{{ error }}</div>{% endif %}
     {% if selected %}
       <div class="page-heading">
-        <div><p class="eyebrow">Category</p><h1>{{ selected.replace(delimiter, ' / ') }}</h1></div>
+        <div><p class="eyebrow">Category</p><h1>{{ selected.replace(delimiter, ' / ') }}</h1>{% if selected_description %}<p class="category-description">{{ selected_description }}</p>{% endif %}</div>
         <span class="count">{{ memories|length }} memories</span>
       </div>
       <form class="composer panel" method="post" action="{{ url_for('create_memory') }}">

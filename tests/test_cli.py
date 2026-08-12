@@ -65,3 +65,31 @@ def test_cli_starts_web_with_saved_settings(monkeypatch, tmp_path):
         assert main(["web"]) == 0
 
     app.run.assert_called_once_with(host="127.0.0.1", port=5000, debug=False)
+
+
+def test_cli_creates_and_updates_category_description(monkeypatch, tmp_path, capsys):
+    exit_code, captured = invoke(
+        monkeypatch,
+        tmp_path,
+        capsys,
+        "category",
+        "create",
+        "work",
+        "--description",
+        "Work-related knowledge",
+    )
+    assert exit_code == 0
+    assert json.loads(captured.out)["description"] == "Work-related knowledge"
+
+    exit_code, captured = invoke(
+        monkeypatch,
+        tmp_path,
+        capsys,
+        "category",
+        "update",
+        "work",
+        "--description",
+        "Current work context",
+    )
+    assert exit_code == 0
+    assert json.loads(captured.out)["description"] == "Current work context"

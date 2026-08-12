@@ -37,33 +37,89 @@ def test_default_database_path_falls_back_to_home(monkeypatch, tmp_path):
     assert default_database_path() == tmp_path / ".local/share/retain/memory.db"
 
 
+def test_new_database_is_created_at_latest_schema(store):
+    with store._connect() as connection:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        settings_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(settings)")
+        }
+        category_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(categories)")
+        }
+
+    assert version == 4
+    assert {"max_memories_per_category", "max_words_per_memory"} <= settings_columns
+    assert "description" in category_columns
+
+
 def test_existing_database_gains_limit_settings(tmp_path):
     database = tmp_path / "old.db"
-    store = Store(database)
-    with store._connect() as connection:
-        connection.execute("ALTER TABLE settings RENAME TO settings_new")
-        connection.execute(
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
             """
+            CREATE TABLE categories (
+                name TEXT PRIMARY KEY CHECK (length(trim(name)) > 0),
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE memories (
+                id TEXT PRIMARY KEY,
+                category TEXT NOT NULL REFERENCES categories(name) ON DELETE CASCADE,
+                content TEXT NOT NULL CHECK (length(trim(content)) > 0),
+                priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 5),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             CREATE TABLE settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 default_priority INTEGER NOT NULL CHECK (default_priority BETWEEN 1 AND 5),
                 web_host TEXT NOT NULL CHECK (length(trim(web_host)) > 0),
                 web_port INTEGER NOT NULL CHECK (web_port BETWEEN 1 AND 65535)
-            )
+            );
+            INSERT INTO settings VALUES (1, 3, '127.0.0.1', 5000);
+            PRAGMA user_version = 2;
             """
         )
-        connection.execute(
-            """
-            INSERT INTO settings (id, default_priority, web_host, web_port)
-            SELECT id, default_priority, web_host, web_port FROM settings_new
-            """
-        )
-        connection.execute("DROP TABLE settings_new")
 
     settings = Store(database).get_settings()
 
     assert settings.max_memories_per_category == 100
     assert settings.max_words_per_memory == 500
+
+
+def test_existing_categories_gain_empty_descriptions(tmp_path):
+    database = tmp_path / "old.db"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE categories (
+                name TEXT PRIMARY KEY CHECK (length(trim(name)) > 0),
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE memories (
+                id TEXT PRIMARY KEY,
+                category TEXT NOT NULL REFERENCES categories(name) ON DELETE CASCADE,
+                content TEXT NOT NULL CHECK (length(trim(content)) > 0),
+                priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 5),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                default_priority INTEGER NOT NULL CHECK (default_priority BETWEEN 1 AND 5),
+                web_host TEXT NOT NULL CHECK (length(trim(web_host)) > 0),
+                web_port INTEGER NOT NULL CHECK (web_port BETWEEN 1 AND 65535),
+                max_memories_per_category INTEGER NOT NULL DEFAULT 100,
+                max_words_per_memory INTEGER NOT NULL DEFAULT 500
+            );
+            INSERT INTO categories VALUES ('notes', 'now');
+            INSERT INTO settings VALUES (1, 3, '127.0.0.1', 5000, 100, 500);
+            PRAGMA user_version = 3;
+            """
+        )
+
+    category = Store(database).get_category("notes")
+
+    assert category.description == ""
 
 
 def test_category_lifecycle(store):
@@ -81,8 +137,8 @@ def test_category_lifecycle(store):
 
 
 def test_nested_category_rename_moves_descendants_and_memories(store):
-    store.create_category("projects")
-    store.create_category(f"projects{CATEGORY_DELIMITER}retain")
+    store.create_category("projects", "All active projects")
+    store.create_category(f"projects{CATEGORY_DELIMITER}retain", "Retain development")
     memory = store.add_memory(f"projects{CATEGORY_DELIMITER}retain", "Ship it")
 
     renamed = store.rename_category("projects", "work")
@@ -93,6 +149,18 @@ def test_nested_category_rename_moves_descendants_and_memories(store):
         f"work{CATEGORY_DELIMITER}retain",
     ]
     assert store.get_memory(memory.id).category == f"work{CATEGORY_DELIMITER}retain"
+    assert store.get_category("work").description == "All active projects"
+    assert store.get_category("work::retain").description == "Retain development"
+
+
+def test_category_description_can_be_created_and_updated(store):
+    created = store.create_category("books", "  Books to remember  ")
+
+    updated = store.update_category("books", description="Read and unread books")
+
+    assert created.description == "Books to remember"
+    assert updated.description == "Read and unread books"
+    assert store.get_category("books") == updated
 
 
 @pytest.mark.parametrize("name", ["parent:", "parent:::child", "parent::::child"])

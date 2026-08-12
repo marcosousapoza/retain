@@ -9,6 +9,8 @@ and create, retrieve, update, or delete memories within them.
 
 Category names can form a hierarchy using the Anki-style `::` delimiter, for example
 `projects::retain::release`. Each part must be non-empty and cannot contain a colon.
+Categories can also have an optional description explaining what belongs in them. MCP
+category listings include these descriptions so clients can choose the appropriate leaf.
 
 ## Installation
 

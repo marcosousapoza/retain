@@ -8,7 +8,9 @@ from flask import Flask, abort, redirect, render_template, request, url_for
 from .store import CATEGORY_DELIMITER, NotFoundError, RetainError, Store
 
 
-def build_category_tree(names: list[str]) -> list[dict[str, Any]]:
+def build_category_tree(
+    names: list[str], descriptions: dict[str, str] | None = None
+) -> list[dict[str, Any]]:
     roots: list[dict[str, Any]] = []
     children: dict[tuple[str, ...], list[dict[str, Any]]] = {(): roots}
     real_names = set(names)
@@ -23,6 +25,7 @@ def build_category_tree(names: list[str]) -> list[dict[str, Any]]:
             "label": path[-1],
             "name": full_name,
             "exists": full_name in real_names,
+            "description": (descriptions or {}).get(full_name, ""),
             "children": [],
         }
         children.setdefault(path[:-1], roots).append(node)
@@ -39,10 +42,18 @@ def create_app(store: Store | None = None) -> Flask:
 
     def page_context(**values: Any) -> dict[str, Any]:
         categories = get_store().list_categories()
+        selected = values.get("selected")
         return {
             "categories": categories,
-            "category_tree": build_category_tree([category.name for category in categories]),
+            "category_tree": build_category_tree(
+                [category.name for category in categories],
+                {category.name: category.description for category in categories},
+            ),
             "delimiter": CATEGORY_DELIMITER,
+            "selected_description": next(
+                (category.description for category in categories if category.name == selected),
+                "",
+            ),
             **values,
         }
 
@@ -117,7 +128,9 @@ def create_app(store: Store | None = None) -> Flask:
     @app.post("/categories")
     def create_category():
         try:
-            category = get_store().create_category(request.form.get("name", ""))
+            category = get_store().create_category(
+                request.form.get("name", ""), request.form.get("description", "")
+            )
         except RetainError as error:
             return render_template("categories.html", **page_context(error=str(error))), 400
         return redirect(url_for("index", category=category.name))
@@ -128,21 +141,27 @@ def create_app(store: Store | None = None) -> Flask:
 
     @app.route("/categories/<path:name>/edit", methods=["GET", "POST"])
     def edit_category(name: str):
-        if name not in {category.name for category in get_store().list_categories()}:
+        try:
+            category = get_store().get_category(name)
+        except NotFoundError:
             abort(404)
         if request.method == "POST":
             try:
-                category = get_store().rename_category(name, request.form.get("name", ""))
+                category = get_store().update_category(
+                    name,
+                    new_name=request.form.get("name", ""),
+                    description=request.form.get("description", ""),
+                )
             except RetainError as error:
                 return (
                     render_template(
                         "category_edit.html",
-                        **page_context(category_name=name, error=str(error)),
+                        **page_context(category=category, error=str(error)),
                     ),
                     400,
                 )
             return redirect(url_for("index", category=category.name))
-        return render_template("category_edit.html", **page_context(category_name=name))
+        return render_template("category_edit.html", **page_context(category=category))
 
     @app.post("/categories/<path:name>/delete")
     def delete_category(name: str):
