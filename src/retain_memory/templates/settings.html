@@ -8,6 +8,11 @@
   <form class="panel form-card" method="post">
     <label for="default_priority">Default memory priority</label>
     <select id="default_priority" name="default_priority">{% for priority in range(1, 6) %}<option value="{{ priority }}"{% if priority == settings.default_priority %} selected{% endif %}>{{ priority }}</option>{% endfor %}</select>
+    <label for="max_memories_per_category">Maximum memories per category</label>
+    <input id="max_memories_per_category" name="max_memories_per_category" type="number" min="1" value="{{ settings.max_memories_per_category }}" required>
+    <label for="max_words_per_memory">Maximum words per memory</label>
+    <input id="max_words_per_memory" name="max_words_per_memory" type="number" min="1" value="{{ settings.max_words_per_memory }}" required>
+    <p class="hint">Lower limits do not delete existing memories. They apply to future additions, content edits, and category moves.</p>
     <label for="web_host">Web host</label>
     <input id="web_host" name="web_host" value="{{ settings.web_host }}" required>
     <label for="web_port">Web port</label>

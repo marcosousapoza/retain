@@ -69,7 +69,13 @@ def test_web_renames_category_branch(client, store):
 def test_web_updates_settings(client, store):
     response = client.post(
         "/settings",
-        data={"default_priority": "5", "web_host": "0.0.0.0", "web_port": "8080"},
+        data={
+            "default_priority": "5",
+            "web_host": "0.0.0.0",
+            "web_port": "8080",
+            "max_memories_per_category": "25",
+            "max_words_per_memory": "75",
+        },
     )
 
     assert response.status_code == 302
@@ -77,6 +83,8 @@ def test_web_updates_settings(client, store):
         "default_priority": 5,
         "web_host": "0.0.0.0",
         "web_port": 8080,
+        "max_memories_per_category": 25,
+        "max_words_per_memory": 75,
     }
 
 

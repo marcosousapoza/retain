@@ -11,14 +11,14 @@ mcp = FastMCP("retain")
 
 @mcp.tool()
 def list_categories() -> list[dict[str, Any]]:
-    """List all memory categories. Categories can only be created with the CLI."""
-    return [category.to_dict() for category in Store().list_categories()]
+    """List leaf categories whose memories can be fetched. Manage categories in the web UI."""
+    return [category.to_dict() for category in Store().list_leaf_categories()]
 
 
 @mcp.tool()
 def get_memories(category: str) -> list[dict[str, Any]]:
-    """Get a category's memories, ordered by highest priority and then newest first."""
-    return [memory.to_dict() for memory in Store().list_memories(category)]
+    """Get a leaf category's memories. Categories with subcategories cannot be fetched."""
+    return [memory.to_dict() for memory in Store().list_memories(category, leaf_only=True)]
 
 
 @mcp.tool()

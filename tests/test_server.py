@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 
+import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -14,7 +15,7 @@ from retain_memory.server import (
     list_categories,
     update_memory,
 )
-from retain_memory.store import Store
+from retain_memory.store import RetainError, Store
 
 
 def test_mcp_functions_manage_memories_but_not_categories(monkeypatch, tmp_path):
@@ -62,3 +63,14 @@ def test_stdio_server_exposes_expected_tools(tmp_path):
             assert not result.isError
 
     asyncio.run(inspect_server())
+
+
+def test_mcp_lists_and_fetches_only_leaf_categories(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMORY_FILE", str(tmp_path / "memory.db"))
+    store = Store()
+    store.create_category("work")
+    store.create_category("work::retain")
+
+    assert [category["name"] for category in list_categories()] == ["work::retain"]
+    with pytest.raises(RetainError, match="fetch a leaf category"):
+        get_memories("work")

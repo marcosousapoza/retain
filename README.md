@@ -70,8 +70,10 @@ retain web
 ```
 
 It provides memory and category editing, displays hierarchical categories as trees,
-and includes settings for the default priority and web host/port. Saved host and port
-changes take effect on the next start. They can be overridden for one run:
+and includes settings for the default priority, category size limit, memory word limit,
+and web host/port. Categories initially allow 100 memories and memories initially allow
+500 words. Lowering a limit does not delete existing data. Saved host and port changes
+take effect on the next start. They can be overridden for one run:
 
 ```console
 retain web --host 0.0.0.0 --port 8080
@@ -109,6 +111,9 @@ The MCP server exposes:
 - `add_memory`
 - `update_memory`
 - `delete_memory`
+
+`list_categories` exposes only leaf categories, and `get_memories` rejects categories
+that have subcategories. Reads never implicitly combine a parent with its descendants.
 
 It does not expose category creation or deletion. Create categories with
 `retain category create NAME` before adding memories through MCP.

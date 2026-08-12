@@ -51,6 +51,8 @@ class Settings:
     default_priority: int
     web_host: str
     web_port: int
+    max_memories_per_category: int
+    max_words_per_memory: int
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -123,6 +125,24 @@ class Store:
                 PRAGMA user_version = 2;
                 """
             )
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(settings)").fetchall()
+            }
+            if "max_memories_per_category" not in columns:
+                connection.execute(
+                    """
+                    ALTER TABLE settings ADD COLUMN max_memories_per_category INTEGER
+                    NOT NULL DEFAULT 100 CHECK (max_memories_per_category > 0)
+                    """
+                )
+            if "max_words_per_memory" not in columns:
+                connection.execute(
+                    """
+                    ALTER TABLE settings ADD COLUMN max_words_per_memory INTEGER
+                    NOT NULL DEFAULT 500 CHECK (max_words_per_memory > 0)
+                    """
+                )
+            connection.execute("PRAGMA user_version = 3")
 
     @staticmethod
     def _validate_text(value: str, label: str) -> str:
@@ -136,6 +156,21 @@ class Store:
         if isinstance(priority, bool) or not 1 <= priority <= 5:
             raise RetainError("priority must be an integer from 1 to 5")
         return priority
+
+    @staticmethod
+    def _validate_positive_integer(value: int, label: str) -> int:
+        if isinstance(value, bool) or value < 1:
+            raise RetainError(f"{label} must be a positive integer")
+        return value
+
+    def _validate_memory_content(self, content: str, max_words: int) -> str:
+        content = self._validate_text(content, "memory content")
+        word_count = len(content.split())
+        if word_count > max_words:
+            raise RetainError(
+                f"memory content contains {word_count} words; the maximum is {max_words}"
+            )
+        return content
 
     @classmethod
     def _validate_category_name(cls, name: str) -> str:
@@ -167,6 +202,15 @@ class Store:
                 "SELECT name, created_at FROM categories ORDER BY name COLLATE NOCASE"
             ).fetchall()
         return [Category(**dict(row)) for row in rows]
+
+    def list_leaf_categories(self) -> list[Category]:
+        categories = self.list_categories()
+        names = {category.name for category in categories}
+        return [
+            category
+            for category in categories
+            if not any(name.startswith(f"{category.name}{CATEGORY_DELIMITER}") for name in names)
+        ]
 
     def rename_category(self, name: str, new_name: str) -> Category:
         new_name = self._validate_category_name(new_name)
@@ -225,7 +269,8 @@ class Store:
             connection.execute("DELETE FROM categories WHERE name = ?", (name,))
 
     def add_memory(self, category: str, content: str, priority: int = 3) -> Memory:
-        content = self._validate_text(content, "memory content")
+        settings = self.get_settings()
+        content = self._validate_memory_content(content, settings.max_words_per_memory)
         priority = self._validate_priority(priority)
         timestamp = _timestamp()
         memory = Memory(
@@ -238,6 +283,20 @@ class Store:
         )
         try:
             with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                category_row = connection.execute(
+                    "SELECT 1 FROM categories WHERE name = ?", (category,)
+                ).fetchone()
+                if category_row is None:
+                    raise NotFoundError(f"category not found: {category}")
+                memory_count = connection.execute(
+                    "SELECT COUNT(*) FROM memories WHERE category = ?", (category,)
+                ).fetchone()[0]
+                if memory_count >= settings.max_memories_per_category:
+                    raise ConflictError(
+                        f"category contains the maximum of "
+                        f"{settings.max_memories_per_category} memories"
+                    )
                 connection.execute(
                     """
                     INSERT INTO memories (id, category, content, priority, created_at, updated_at)
@@ -253,14 +312,17 @@ class Store:
                     ),
                 )
         except sqlite3.IntegrityError as error:
-            if not self._category_exists(category):
-                raise NotFoundError(f"category not found: {category}") from error
             raise RetainError(f"could not add memory: {error}") from error
         return memory
 
-    def list_memories(self, category: str) -> list[Memory]:
+    def list_memories(self, category: str, *, leaf_only: bool = False) -> list[Memory]:
         if not self._category_exists(category):
             raise NotFoundError(f"category not found: {category}")
+        if leaf_only and not self._category_is_leaf(category):
+            raise RetainError(
+                f"category has subcategories and cannot be fetched: {category}; "
+                "fetch a leaf category instead"
+            )
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -297,8 +359,9 @@ class Store:
         if content is None and priority is None and category is None:
             raise RetainError("provide content, priority, category, or a combination")
         existing = self.get_memory(memory_id)
+        settings = self.get_settings()
         new_content = (
-            self._validate_text(content, "memory content")
+            self._validate_memory_content(content, settings.max_words_per_memory)
             if content is not None
             else existing.content
         )
@@ -306,10 +369,25 @@ class Store:
             self._validate_priority(priority) if priority is not None else existing.priority
         )
         new_category = category if category is not None else existing.category
-        if not self._category_exists(new_category):
-            raise NotFoundError(f"category not found: {new_category}")
         updated_at = _timestamp()
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if (
+                connection.execute(
+                    "SELECT 1 FROM categories WHERE name = ?", (new_category,)
+                ).fetchone()
+                is None
+            ):
+                raise NotFoundError(f"category not found: {new_category}")
+            if new_category != existing.category:
+                memory_count = connection.execute(
+                    "SELECT COUNT(*) FROM memories WHERE category = ?", (new_category,)
+                ).fetchone()[0]
+                if memory_count >= settings.max_memories_per_category:
+                    raise ConflictError(
+                        f"category contains the maximum of "
+                        f"{settings.max_memories_per_category} memories"
+                    )
             connection.execute(
                 """
                 UPDATE memories
@@ -336,25 +414,67 @@ class Store:
     def get_settings(self) -> Settings:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT default_priority, web_host, web_port FROM settings WHERE id = 1"
+                """
+                SELECT default_priority, web_host, web_port,
+                       max_memories_per_category, max_words_per_memory
+                FROM settings WHERE id = 1
+                """
             ).fetchone()
         return Settings(**dict(row))
 
-    def update_settings(self, *, default_priority: int, web_host: str, web_port: int) -> Settings:
+    def update_settings(
+        self,
+        *,
+        default_priority: int,
+        web_host: str,
+        web_port: int,
+        max_memories_per_category: int,
+        max_words_per_memory: int,
+    ) -> Settings:
         default_priority = self._validate_priority(default_priority)
         web_host = self._validate_text(web_host, "web host")
         if isinstance(web_port, bool) or not 1 <= web_port <= 65535:
             raise RetainError("web port must be an integer from 1 to 65535")
+        max_memories_per_category = self._validate_positive_integer(
+            max_memories_per_category, "maximum memories per category"
+        )
+        max_words_per_memory = self._validate_positive_integer(
+            max_words_per_memory, "maximum words per memory"
+        )
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE settings
-                SET default_priority = ?, web_host = ?, web_port = ?
+                SET default_priority = ?, web_host = ?, web_port = ?,
+                    max_memories_per_category = ?, max_words_per_memory = ?
                 WHERE id = 1
                 """,
-                (default_priority, web_host, web_port),
+                (
+                    default_priority,
+                    web_host,
+                    web_port,
+                    max_memories_per_category,
+                    max_words_per_memory,
+                ),
             )
-        return Settings(default_priority, web_host, web_port)
+        return Settings(
+            default_priority,
+            web_host,
+            web_port,
+            max_memories_per_category,
+            max_words_per_memory,
+        )
+
+    def _category_is_leaf(self, name: str) -> bool:
+        prefix = f"{name}{CATEGORY_DELIMITER}"
+        with self._connect() as connection:
+            return (
+                connection.execute(
+                    "SELECT 1 FROM categories WHERE substr(name, 1, length(?)) = ? LIMIT 1",
+                    (prefix, prefix),
+                ).fetchone()
+                is None
+            )
 
     def _category_exists(self, name: str) -> bool:
         with self._connect() as connection:

@@ -37,6 +37,35 @@ def test_default_database_path_falls_back_to_home(monkeypatch, tmp_path):
     assert default_database_path() == tmp_path / ".local/share/retain/memory.db"
 
 
+def test_existing_database_gains_limit_settings(tmp_path):
+    database = tmp_path / "old.db"
+    store = Store(database)
+    with store._connect() as connection:
+        connection.execute("ALTER TABLE settings RENAME TO settings_new")
+        connection.execute(
+            """
+            CREATE TABLE settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                default_priority INTEGER NOT NULL CHECK (default_priority BETWEEN 1 AND 5),
+                web_host TEXT NOT NULL CHECK (length(trim(web_host)) > 0),
+                web_port INTEGER NOT NULL CHECK (web_port BETWEEN 1 AND 65535)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO settings (id, default_priority, web_host, web_port)
+            SELECT id, default_priority, web_host, web_port FROM settings_new
+            """
+        )
+        connection.execute("DROP TABLE settings_new")
+
+    settings = Store(database).get_settings()
+
+    assert settings.max_memories_per_category == 100
+    assert settings.max_words_per_memory == 500
+
+
 def test_category_lifecycle(store):
     created = store.create_category("projects")
 
@@ -164,6 +193,47 @@ def test_database_enforces_priority_constraint(store):
 def test_settings_are_persisted(store):
     assert store.get_settings().default_priority == 3
 
-    updated = store.update_settings(default_priority=4, web_host="0.0.0.0", web_port=8080)
+    updated = store.update_settings(
+        default_priority=4,
+        web_host="0.0.0.0",
+        web_port=8080,
+        max_memories_per_category=25,
+        max_words_per_memory=50,
+    )
 
     assert Store(store.path).get_settings() == updated
+
+
+def test_memory_limits_are_enforced_on_add_edit_and_move(store):
+    store.create_category("full")
+    store.create_category("other")
+    store.update_settings(
+        default_priority=3,
+        web_host="127.0.0.1",
+        web_port=5000,
+        max_memories_per_category=1,
+        max_words_per_memory=2,
+    )
+    existing = store.add_memory("full", "two words")
+    movable = store.add_memory("other", "move me")
+
+    with pytest.raises(ConflictError, match="maximum of 1"):
+        store.add_memory("full", "another one")
+    with pytest.raises(RetainError, match="3 words; the maximum is 2"):
+        store.update_memory(existing.id, content="one two three")
+    with pytest.raises(ConflictError, match="maximum of 1"):
+        store.update_memory(movable.id, category="full")
+
+
+def test_leaf_category_listing_and_reads(store):
+    store.create_category("work")
+    store.create_category("work::retain")
+    store.create_category("personal")
+
+    assert [category.name for category in store.list_leaf_categories()] == [
+        "personal",
+        "work::retain",
+    ]
+    with pytest.raises(RetainError, match="fetch a leaf category"):
+        store.list_memories("work", leaf_only=True)
+    assert store.list_memories("work") == []

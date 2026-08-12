@@ -163,6 +163,10 @@ def create_app(store: Store | None = None) -> Flask:
                     default_priority=int(request.form.get("default_priority", "")),
                     web_host=request.form.get("web_host", ""),
                     web_port=int(request.form.get("web_port", "")),
+                    max_memories_per_category=int(
+                        request.form.get("max_memories_per_category", "")
+                    ),
+                    max_words_per_memory=int(request.form.get("max_words_per_memory", "")),
                 )
             except (RetainError, ValueError) as error:
                 return (
