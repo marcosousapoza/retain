@@ -48,7 +48,8 @@ retain category delete projects
 retain category delete projects --force
 ```
 
-`--force` is required to delete a category that contains memories.
+Category deletion moves the full branch and its memories to the recoverable archive.
+`--force` is required to archive a branch that contains memories through the CLI.
 
 Manage memories:
 
@@ -109,6 +110,9 @@ If the package was installed with `uv tool install retain-memory`, use
 The MCP server exposes:
 
 - `list_categories`
+- `create_category`
+- `update_category`
+- `delete_category`
 - `get_memories`
 - `add_memory`
 - `update_memory`
@@ -117,8 +121,10 @@ The MCP server exposes:
 `list_categories` exposes only leaf categories, and `get_memories` rejects categories
 that have subcategories. Reads never implicitly combine a parent with its descendants.
 
-It does not expose category creation or deletion. Create categories with
-`retain category create NAME` before adding memories through MCP.
+MCP `delete_category` archives the full category branch and its memories rather than
+permanently deleting them. Users can restore or permanently delete archive entries in
+the web UI. Clients such as OpenCode can independently allow, ask, or deny each category
+tool.
 
 ## Development
 

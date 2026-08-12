@@ -47,7 +47,7 @@ def test_new_database_is_created_at_latest_schema(store):
             row["name"] for row in connection.execute("PRAGMA table_info(categories)")
         }
 
-    assert version == 4
+    assert version == 5
     assert {"max_memories_per_category", "max_words_per_memory"} <= settings_columns
     assert "description" in category_columns
 
@@ -120,6 +120,20 @@ def test_existing_categories_gain_empty_descriptions(tmp_path):
     category = Store(database).get_category("notes")
 
     assert category.description == ""
+
+
+def test_version_four_database_gains_archive_table(tmp_path):
+    database = tmp_path / "version-four.db"
+    store = Store(database)
+    with store._connect() as connection:
+        connection.execute("DROP TABLE archives")
+        connection.execute("PRAGMA user_version = 4")
+
+    migrated = Store(database)
+
+    assert migrated.list_archives() == []
+    with migrated._connect() as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
 
 
 def test_category_lifecycle(store):
@@ -221,16 +235,52 @@ def test_memories_are_ordered_by_priority_then_newest(store, monkeypatch):
     ]
 
 
-def test_category_delete_requires_force_when_nonempty(store):
-    store.create_category("temporary")
-    memory = store.add_memory("temporary", "Discard me")
+def test_category_archive_restores_branch_and_memories(store):
+    store.create_category("temporary", "Root")
+    store.create_category("temporary::child", "Child")
+    root_memory = store.add_memory("temporary", "Root memory")
+    child_memory = store.add_memory("temporary::child", "Child memory")
 
-    with pytest.raises(ConflictError, match="--force"):
-        store.delete_category("temporary")
+    archive = store.archive_category("temporary")
 
-    store.delete_category("temporary", force=True)
+    assert archive.category_count == 2
+    assert archive.memory_count == 2
+    assert store.list_categories() == []
     with pytest.raises(NotFoundError):
-        store.get_memory(memory.id)
+        store.get_memory(root_memory.id)
+
+    restored = store.restore_archive(archive.id)
+
+    assert restored == archive
+    assert [category.name for category in store.list_categories()] == [
+        "temporary",
+        "temporary::child",
+    ]
+    assert store.get_memory(root_memory.id) == root_memory
+    assert store.get_memory(child_memory.id) == child_memory
+    assert store.list_archives() == []
+
+
+def test_archive_restore_rejects_category_conflict(store):
+    store.create_category("temporary")
+    archive = store.archive_category("temporary")
+    store.create_category("temporary")
+
+    with pytest.raises(ConflictError, match="category name already exists"):
+        store.restore_archive(archive.id)
+
+    assert store.list_archives() == [archive]
+
+
+def test_archive_can_be_permanently_deleted(store):
+    store.create_category("temporary")
+    archive = store.archive_category("temporary")
+
+    store.permanently_delete_archive(archive.id)
+
+    assert store.list_archives() == []
+    with pytest.raises(NotFoundError, match="archive not found"):
+        store.restore_archive(archive.id)
 
 
 @pytest.mark.parametrize("priority", [0, 6])

@@ -166,12 +166,40 @@ def create_app(store: Store | None = None) -> Flask:
     @app.post("/categories/<path:name>/delete")
     def delete_category(name: str):
         try:
-            get_store().delete_category(name, force=request.form.get("force") == "yes")
+            get_store().archive_category(name)
         except NotFoundError:
             abort(404)
         except RetainError as error:
             return render_template("categories.html", **page_context(error=str(error))), 409
         return redirect(url_for("categories"))
+
+    @app.get("/archive")
+    def archive():
+        return render_template("archive.html", **page_context(archives=get_store().list_archives()))
+
+    @app.post("/archive/<archive_id>/restore")
+    def restore_archive(archive_id: str):
+        try:
+            entry = get_store().restore_archive(archive_id)
+        except NotFoundError:
+            abort(404)
+        except RetainError as error:
+            return (
+                render_template(
+                    "archive.html",
+                    **page_context(archives=get_store().list_archives(), error=str(error)),
+                ),
+                409,
+            )
+        return redirect(url_for("index", category=entry.root_name))
+
+    @app.post("/archive/<archive_id>/delete")
+    def permanently_delete_archive(archive_id: str):
+        try:
+            get_store().permanently_delete_archive(archive_id)
+        except NotFoundError:
+            abort(404)
+        return redirect(url_for("archive"))
 
     @app.route("/settings", methods=["GET", "POST"])
     def settings():

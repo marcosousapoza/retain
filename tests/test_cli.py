@@ -47,7 +47,7 @@ def test_cli_uses_default_location_without_environment_variable(monkeypatch, tmp
     assert (tmp_path / "data/retain/memory.db").is_file()
 
 
-def test_cli_refuses_nonempty_category_deletion(monkeypatch, tmp_path, capsys):
+def test_cli_requires_force_to_archive_nonempty_category(monkeypatch, tmp_path, capsys):
     invoke(monkeypatch, tmp_path, capsys, "category", "create", "notes")
     invoke(monkeypatch, tmp_path, capsys, "memory", "add", "notes", "Keep this")
 
@@ -55,6 +55,13 @@ def test_cli_refuses_nonempty_category_deletion(monkeypatch, tmp_path, capsys):
 
     assert exit_code == 1
     assert "--force" in captured.err
+
+    exit_code, _ = invoke(monkeypatch, tmp_path, capsys, "category", "delete", "notes", "--force")
+    assert exit_code == 0
+
+    exit_code, captured = invoke(monkeypatch, tmp_path, capsys, "category", "list")
+    assert exit_code == 0
+    assert json.loads(captured.out) == []
 
 
 def test_cli_starts_web_with_saved_settings(monkeypatch, tmp_path):

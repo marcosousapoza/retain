@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Archive · Retain{% endblock %}
+{% block content %}
+<div class="narrow">
+  <div class="page-heading"><div><p class="eyebrow">Recoverable</p><h1>Archive</h1></div></div>
+  {% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+  {% for entry in archives %}
+  <article class="panel archive-card">
+    <div><h2>{{ entry.root_name.replace(delimiter, ' / ') }}</h2><p class="muted">{{ entry.category_count }} categories · {{ entry.memory_count }} memories · {{ entry.archived_at[:10] }}</p></div>
+    <div class="actions">
+      <form method="post" action="{{ url_for('restore_archive', archive_id=entry.id) }}"><button type="submit">Restore</button></form>
+      <form method="post" action="{{ url_for('permanently_delete_archive', archive_id=entry.id) }}" onsubmit="return confirm('Permanently delete this archive? This cannot be undone.')"><button class="danger ghost" type="submit">Delete permanently</button></form>
+    </div>
+  </article>
+  {% else %}<div class="empty panel">The archive is empty.</div>{% endfor %}
+</div>
+{% endblock %}

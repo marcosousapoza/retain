@@ -70,6 +70,9 @@ button, .button { display: inline-block; padding: 10px 16px; color: white; backg
 .manage-list small { color: var(--muted); white-space: pre-wrap; }
 .manage-list a { color: var(--green); font-weight: 700; }
 .danger-zone { margin-top: 34px; border-color: #ddb8b0; }
+.archive-card { display: grid; gap: 14px; padding: 20px; margin-bottom: 14px; }
+.archive-card h2 { margin: 0; font: 700 21px Georgia, serif; }
+.archive-card p { margin: 5px 0 0; }
 .check { display: flex; gap: 9px; align-items: start; margin-bottom: 18px; font-weight: 500; }
 .check input { width: auto; margin: 2px 0 0; }
 .notice { padding: 13px 16px; margin-bottom: 18px; border-radius: 8px; }

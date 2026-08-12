@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import uuid
@@ -10,7 +11,7 @@ from typing import Any
 
 ENV_NAME = "MEMORY_FILE"
 CATEGORY_DELIMITER = "::"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class RetainError(Exception):
@@ -55,6 +56,18 @@ class Settings:
     web_port: int
     max_memories_per_category: int
     max_words_per_memory: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ArchiveEntry:
+    id: str
+    root_name: str
+    category_count: int
+    memory_count: int
+    archived_at: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -148,6 +161,21 @@ class Store:
                     PRAGMA user_version = 4;
                     """
                 )
+                version = 4
+            if version == 4:
+                connection.executescript(
+                    """
+                    CREATE TABLE archives (
+                        id TEXT PRIMARY KEY,
+                        root_name TEXT NOT NULL,
+                        category_count INTEGER NOT NULL CHECK (category_count > 0),
+                        memory_count INTEGER NOT NULL CHECK (memory_count >= 0),
+                        payload TEXT NOT NULL,
+                        archived_at TEXT NOT NULL
+                    );
+                    PRAGMA user_version = 5;
+                    """
+                )
 
     @staticmethod
     def _create_schema(connection: sqlite3.Connection) -> None:
@@ -187,7 +215,16 @@ class Store:
                     max_memories_per_category, max_words_per_memory
                 ) VALUES (1, 3, '127.0.0.1', 5000, 100, 500);
 
-                PRAGMA user_version = 4;
+                CREATE TABLE archives (
+                    id TEXT PRIMARY KEY,
+                    root_name TEXT NOT NULL,
+                    category_count INTEGER NOT NULL CHECK (category_count > 0),
+                    memory_count INTEGER NOT NULL CHECK (memory_count >= 0),
+                    payload TEXT NOT NULL,
+                    archived_at TEXT NOT NULL
+                );
+
+                PRAGMA user_version = 5;
                 """
         )
 
@@ -349,25 +386,163 @@ class Store:
 
         return Category(new_name, new_description, existing.created_at)
 
-    def delete_category(self, name: str, *, force: bool = False) -> None:
+    def archive_category(self, name: str) -> ArchiveEntry:
+        prefix = f"{name}{CATEGORY_DELIMITER}"
+        archived_at = _timestamp()
+        archive_id = str(uuid.uuid4())
         with self._connect() as connection:
-            row = connection.execute(
+            connection.execute("BEGIN IMMEDIATE")
+            category_rows = connection.execute(
                 """
-                SELECT c.name, COUNT(m.id) AS memory_count
-                FROM categories c
-                LEFT JOIN memories m ON m.category = c.name
-                WHERE c.name = ?
-                GROUP BY c.name
+                SELECT name, description, created_at FROM categories
+                WHERE name = ? OR substr(name, 1, length(?)) = ?
+                ORDER BY length(name), name
                 """,
-                (name,),
+                (name, prefix, prefix),
+            ).fetchall()
+            if not category_rows:
+                raise NotFoundError(f"category not found: {name}")
+            category_names = [row["name"] for row in category_rows]
+            placeholders = ", ".join("?" for _ in category_names)
+            memory_rows = connection.execute(
+                f"""
+                SELECT id, category, content, priority, created_at, updated_at
+                FROM memories WHERE category IN ({placeholders})
+                """,
+                category_names,
+            ).fetchall()
+            entry = ArchiveEntry(
+                archive_id,
+                name,
+                len(category_rows),
+                len(memory_rows),
+                archived_at,
+            )
+            payload = json.dumps(
+                {
+                    "categories": [dict(row) for row in category_rows],
+                    "memories": [dict(row) for row in memory_rows],
+                },
+                ensure_ascii=False,
+            )
+            connection.execute(
+                """
+                INSERT INTO archives (
+                    id, root_name, category_count, memory_count, payload, archived_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry.id,
+                    entry.root_name,
+                    entry.category_count,
+                    entry.memory_count,
+                    payload,
+                    entry.archived_at,
+                ),
+            )
+            connection.executemany(
+                "DELETE FROM categories WHERE name = ?", [(value,) for value in category_names]
+            )
+        return entry
+
+    def delete_category(self, name: str, *, force: bool = False) -> None:
+        if not force and self.category_memory_count(name):
+            raise ConflictError("category contains memories; use --force to archive it")
+        self.archive_category(name)
+
+    def category_memory_count(self, name: str) -> int:
+        prefix = f"{name}{CATEGORY_DELIMITER}"
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM categories WHERE name = ?", (name,)
+            ).fetchone()
+            if exists is None:
+                raise NotFoundError(f"category not found: {name}")
+            return connection.execute(
+                """
+                SELECT COUNT(*) FROM memories
+                WHERE category = ? OR substr(category, 1, length(?)) = ?
+                """,
+                (name, prefix, prefix),
+            ).fetchone()[0]
+
+    def list_archives(self) -> list[ArchiveEntry]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, root_name, category_count, memory_count, archived_at
+                FROM archives ORDER BY archived_at DESC
+                """
+            ).fetchall()
+        return [ArchiveEntry(**dict(row)) for row in rows]
+
+    def restore_archive(self, archive_id: str) -> ArchiveEntry:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM archives WHERE id = ?", (archive_id,)
             ).fetchone()
             if row is None:
-                raise NotFoundError(f"category not found: {name}")
-            if row["memory_count"] and not force:
-                raise ConflictError(
-                    f"category contains {row['memory_count']} memories; use --force to delete it"
-                )
-            connection.execute("DELETE FROM categories WHERE name = ?", (name,))
+                raise NotFoundError(f"archive not found: {archive_id}")
+            payload = json.loads(row["payload"])
+            category_names = [category["name"] for category in payload["categories"]]
+            memory_ids = [memory["id"] for memory in payload["memories"]]
+            if self._values_exist(connection, "categories", "name", category_names):
+                raise ConflictError("cannot restore archive because a category name already exists")
+            if self._values_exist(connection, "memories", "id", memory_ids):
+                raise ConflictError("cannot restore archive because a memory ID already exists")
+            connection.executemany(
+                "INSERT INTO categories (name, description, created_at) VALUES (?, ?, ?)",
+                [
+                    (category["name"], category["description"], category["created_at"])
+                    for category in payload["categories"]
+                ],
+            )
+            connection.executemany(
+                """
+                INSERT INTO memories (id, category, content, priority, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        memory["id"],
+                        memory["category"],
+                        memory["content"],
+                        memory["priority"],
+                        memory["created_at"],
+                        memory["updated_at"],
+                    )
+                    for memory in payload["memories"]
+                ],
+            )
+            connection.execute("DELETE FROM archives WHERE id = ?", (archive_id,))
+        return ArchiveEntry(
+            row["id"],
+            row["root_name"],
+            row["category_count"],
+            row["memory_count"],
+            row["archived_at"],
+        )
+
+    def permanently_delete_archive(self, archive_id: str) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM archives WHERE id = ?", (archive_id,))
+            if cursor.rowcount == 0:
+                raise NotFoundError(f"archive not found: {archive_id}")
+
+    @staticmethod
+    def _values_exist(
+        connection: sqlite3.Connection, table: str, column: str, values: list[str]
+    ) -> bool:
+        if not values:
+            return False
+        placeholders = ", ".join("?" for _ in values)
+        return (
+            connection.execute(
+                f"SELECT 1 FROM {table} WHERE {column} IN ({placeholders}) LIMIT 1", values
+            ).fetchone()
+            is not None
+        )
 
     def add_memory(self, category: str, content: str, priority: int = 3) -> Memory:
         settings = self.get_settings()

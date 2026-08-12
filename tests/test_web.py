@@ -82,6 +82,28 @@ def test_web_edits_category_description(client, store):
     assert store.get_category("work").description == "What belongs at work"
 
 
+def test_web_archives_restores_and_permanently_deletes(client, store):
+    store.create_category("work")
+    store.add_memory("work", "Remember this")
+
+    response = client.post("/categories/work/delete")
+    archive = store.list_archives()[0]
+
+    assert response.status_code == 302
+    page = client.get("/archive")
+    assert b"work" in page.data
+    assert b"1 memories" in page.data
+
+    response = client.post(f"/archive/{archive.id}/restore")
+    assert response.status_code == 302
+    assert store.get_category("work").name == "work"
+
+    archived_again = store.archive_category("work")
+    response = client.post(f"/archive/{archived_again.id}/delete")
+    assert response.status_code == 302
+    assert store.list_archives() == []
+
+
 def test_web_updates_settings(client, store):
     response = client.post(
         "/settings",

@@ -32,10 +32,10 @@ def build_parser() -> argparse.ArgumentParser:
     category_update.add_argument("name")
     category_update.add_argument("--new-name")
     category_update.add_argument("--description")
-    category_delete = category_commands.add_parser("delete", help="Delete a category")
+    category_delete = category_commands.add_parser("delete", help="Archive a category branch")
     category_delete.add_argument("name")
     category_delete.add_argument(
-        "--force", action="store_true", help="Also delete memories in the category"
+        "--force", action="store_true", help="Also archive memories in the branch"
     )
 
     memory = resources.add_parser("memory", help="Manage memories")

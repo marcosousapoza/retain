@@ -16,6 +16,26 @@ def list_categories() -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+def create_category(name: str, description: str = "") -> dict[str, Any]:
+    """Create a category, optionally with a description of what belongs in it."""
+    return Store().create_category(name, description).to_dict()
+
+
+@mcp.tool()
+def update_category(
+    name: str, new_name: str | None = None, description: str | None = None
+) -> dict[str, Any]:
+    """Update a category's name, description, or both. Renaming also renames descendants."""
+    return Store().update_category(name, new_name=new_name, description=description).to_dict()
+
+
+@mcp.tool()
+def delete_category(name: str) -> dict[str, Any]:
+    """Archive a category branch and its memories so the user can restore or purge it."""
+    return Store().archive_category(name).to_dict()
+
+
+@mcp.tool()
 def get_memories(category: str) -> list[dict[str, Any]]:
     """Get a leaf category's memories. Categories with subcategories cannot be fetched."""
     return [memory.to_dict() for memory in Store().list_memories(category, leaf_only=True)]

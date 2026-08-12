@@ -12,10 +12,10 @@
     <textarea id="description" name="description" rows="5" placeholder="What belongs in this category?">{{ category.description }}</textarea>
     <button type="submit">Save category</button>
   </form>
-  <form class="panel form-card danger-zone" method="post" action="{{ url_for('delete_category', name=category.name) }}" onsubmit="return confirm('Delete this category?')">
-    <h2>Delete category</h2>
-    <label class="check"><input type="checkbox" name="force" value="yes"> Also delete every memory directly in this category</label>
-    <button class="danger" type="submit">Delete category</button>
+  <form class="panel form-card danger-zone" method="post" action="{{ url_for('delete_category', name=category.name) }}" onsubmit="return confirm('Archive this category branch?')">
+    <h2>Archive category branch</h2>
+    <p class="hint">The category, every subcategory, and all their memories will move to the archive. You can restore or permanently delete them later.</p>
+    <button class="danger" type="submit">Move to archive</button>
   </form>
 </div>
 {% endblock %}

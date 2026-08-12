@@ -10,9 +10,12 @@ from mcp.client.stdio import stdio_client
 
 from retain_memory.server import (
     add_memory,
+    create_category,
+    delete_category,
     delete_memory,
     get_memories,
     list_categories,
+    update_category,
     update_memory,
 )
 from retain_memory.store import RetainError, Store
@@ -51,6 +54,9 @@ def test_stdio_server_exposes_expected_tools(tmp_path):
             tools = await session.list_tools()
             assert {tool.name for tool in tools.tools} == {
                 "list_categories",
+                "create_category",
+                "update_category",
+                "delete_category",
                 "get_memories",
                 "add_memory",
                 "update_memory",
@@ -75,3 +81,21 @@ def test_mcp_lists_and_fetches_only_leaf_categories(monkeypatch, tmp_path):
     assert list_categories()[0]["description"] == "Knowledge about the Retain project"
     with pytest.raises(RetainError, match="fetch a leaf category"):
         get_memories("work")
+
+
+def test_mcp_manages_and_archives_categories(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMORY_FILE", str(tmp_path / "memory.db"))
+
+    created = create_category("agent", "Agent knowledge")
+    updated = update_category("agent", description="Curated agent knowledge")
+    memory = add_memory("agent", "Remember this")
+    archived = delete_category("agent")
+
+    assert created["description"] == "Agent knowledge"
+    assert updated["description"] == "Curated agent knowledge"
+    assert archived["root_name"] == "agent"
+    assert archived["memory_count"] == 1
+    with pytest.raises(RetainError, match="category not found"):
+        get_memories("agent")
+    assert Store().list_archives()[0].id == archived["id"]
+    assert memory["id"]
