@@ -4,12 +4,37 @@ import sqlite3
 
 import pytest
 
-from retain_memory.store import CATEGORY_DELIMITER, ConflictError, NotFoundError, RetainError, Store
+from retain_memory.store import (
+    CATEGORY_DELIMITER,
+    ConflictError,
+    NotFoundError,
+    RetainError,
+    Store,
+    default_database_path,
+)
 
 
 @pytest.fixture
 def store(tmp_path):
     return Store(tmp_path / "memory.db")
+
+
+def test_default_database_path_uses_xdg_data_home(monkeypatch, tmp_path):
+    monkeypatch.delenv("MEMORY_FILE", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+
+    store = Store()
+
+    assert default_database_path() == tmp_path / "data/retain/memory.db"
+    assert store.path == default_database_path()
+    assert store.path.is_file()
+
+
+def test_default_database_path_falls_back_to_home(monkeypatch, tmp_path):
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setattr("retain_memory.store.Path.home", lambda: tmp_path)
+
+    assert default_database_path() == tmp_path / ".local/share/retain/memory.db"
 
 
 def test_category_lifecycle(store):

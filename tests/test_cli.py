@@ -38,11 +38,13 @@ def test_cli_category_and_memory_flow(monkeypatch, tmp_path, capsys):
     assert json.loads(captured.out) == [memory]
 
 
-def test_cli_reports_missing_environment_variable(monkeypatch, capsys):
+def test_cli_uses_default_location_without_environment_variable(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv("MEMORY_FILE", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
 
-    assert main(["category", "list"]) == 1
-    assert "MEMORY_FILE must point" in capsys.readouterr().err
+    assert main(["category", "list"]) == 0
+    assert json.loads(capsys.readouterr().out) == []
+    assert (tmp_path / "data/retain/memory.db").is_file()
 
 
 def test_cli_refuses_nonempty_category_deletion(monkeypatch, tmp_path, capsys):

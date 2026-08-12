@@ -60,9 +60,21 @@ def _timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def default_database_path() -> Path:
+    data_home = os.environ.get("XDG_DATA_HOME")
+    base = (
+        Path(data_home).expanduser()
+        if data_home and data_home.strip()
+        else Path.home() / ".local/share"
+    )
+    return base / "retain/memory.db"
+
+
 class Store:
     def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
         configured_path = str(path) if path is not None else os.environ.get(ENV_NAME)
+        if configured_path is None:
+            configured_path = str(default_database_path())
         if not configured_path or not configured_path.strip():
             raise RetainError(f"{ENV_NAME} must point to a SQLite database file")
 

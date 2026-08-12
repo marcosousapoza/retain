@@ -25,8 +25,11 @@ To install the current source checkout instead:
 uv tool install .
 ```
 
-Set `MEMORY_FILE` to the database location. The directory and database are created on
-first use:
+No setup is required before the first run. By default, Retain creates its database and
+settings at `$XDG_DATA_HOME/retain/memory.db`, or
+`$HOME/.local/share/retain/memory.db` when `XDG_DATA_HOME` is unset.
+
+Set `MEMORY_FILE` to use a different database location:
 
 ```console
 export MEMORY_FILE="$HOME/.local/share/retain/memory.db"
